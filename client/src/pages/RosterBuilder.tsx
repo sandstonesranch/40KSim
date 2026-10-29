@@ -22,8 +22,8 @@ type Faction = { id: string; name: string; subfactions: string[]; };
 type Detachment = { id: string; name: string; };
 type Unit = { id: string; name: string; points: number; };
 type GroupedUnits = { [key: string]: Unit[]; };
-type WargearSelection = { name: string; replaced: string[] };
-type RosterItem = Unit & { instanceId: string; size: number; is_warlord: boolean; wargear: WargearSelection[]; keywords: string[]; enhancement: any | null; };
+type WargearSelection = { name: string; replaced: string[]; quantity: number };
+type RosterItem = Unit & { instanceId: string; size: number; is_warlord: boolean; wargear: WargearSelection[]; keywords: string[]; enhancement: any | null; attached_to?: string | null; };
 type Violation = { code: string; severity: string; message: string; };
 type Suggestion = { missing_role: string; suggested_unit_id: string; suggested_unit_name: string; points: number; reason: string; };
 type WargearOption = { replaces: string[]; choices: string[]; is_free: boolean; };
@@ -32,7 +32,7 @@ const normalizeWargear = (wargear: unknown): WargearSelection[] => {
   if (!Array.isArray(wargear)) return [];
 
   return wargear.flatMap((item): WargearSelection[] => {
-    if (typeof item === 'string') return [{ name: item, replaced: [] }];
+    if (typeof item === 'string') return [{ name: item, replaced: [], quantity: 1 }];
     if (
       typeof item === 'object' &&
       item !== null &&
@@ -44,6 +44,9 @@ const normalizeWargear = (wargear: unknown): WargearSelection[] => {
         replaced: 'replaced' in item && Array.isArray(item.replaced)
           ? item.replaced.filter((name: unknown): name is string => typeof name === 'string')
           : [],
+        quantity: 'quantity' in item && typeof item.quantity === 'number' && Number.isInteger(item.quantity) && item.quantity > 0
+          ? item.quantity
+          : 1,
       }];
     }
     return [];
@@ -64,7 +67,7 @@ type UnitDetails = {
   name: string;
   keywords: string[];
   stats: { M: string; T: string; SV: string; W: string; LD: string; OC: string; };
-  weapons: { name: string; stats: any; keywords: string[]; is_melee?: boolean }[];
+  weapons: { id: string; profile_index: number; name: string; stats: any; keywords: string[]; is_melee?: boolean }[];
   wargear_options?: WargearOption[];
   available_enhancements: any[];
   abilities: { name: string; text: string }[];
@@ -110,12 +113,14 @@ function RosterBuilder() {
 
   const [search, setSearch] = useState("");
   const [groupedUnits, setGroupedUnits] = useState<GroupedUnits>({});
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [openGroups, setOpenGroups] = useState<{ [key: string]: boolean }>({ Characters: true, Battleline: true, "Other Units": true });
 
   const [roster, setRoster] = useState<RosterItem[]>(
     (savedData.roster || []).map(item => ({ ...item, wargear: normalizeWargear(item.wargear) }))
   );
   const [violations, setViolations] = useState<Violation[]>([]);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
 
   const [selectedUnitDetails, setSelectedUnitDetails] = useState<UnitDetails | null>(null);
@@ -161,20 +166,46 @@ function RosterBuilder() {
 
   // 3. Fetch Units for Search
   useEffect(() => {
-    if (!selectedFaction) return;
+    if (!selectedFaction) {
+      setGroupedUnits({});
+      setSearchError(null);
+      return;
+    }
+
+    let active = true;
+    setSearchError(null);
     fetch(`http://127.0.0.1:8000/api/search?q=${search}&faction_id=${encodeURIComponent(selectedFaction)}`)
-      .then(res => res.json())
-      .then(data => setGroupedUnits(data));
+      .then(res => {
+        if (!res.ok) throw new Error(`Unit search failed with status ${res.status}`);
+        return res.json() as Promise<GroupedUnits>;
+      })
+      .then(data => {
+        if (active) setGroupedUnits(data);
+      })
+      .catch(error => {
+        console.error('Failed to search units', error);
+        if (active) {
+          setGroupedUnits({});
+          setSearchError('Could not load units. Check that the backend is running and try again.');
+        }
+      });
+
+    return () => {
+      active = false;
+    };
   }, [search, selectedFaction]);
 
   // 4. Validate Roster & Get Advice
   useEffect(() => {
     if (roster.length === 0) {
       setViolations([]);
+      setValidationError(null);
       setSuggestions([]);
       return;
     }
 
+    let active = true;
+    setValidationError(null);
     const payload = {
       faction_id: selectedFaction.split("|")[0],
       detachment_id: selectedDetachment || "none",
@@ -184,7 +215,8 @@ function RosterBuilder() {
         datasheet_id: r.id,
         size: r.size,
         is_warlord: r.is_warlord,
-        enhancement: r.enhancement ? r.enhancement.name : null
+        enhancement: r.enhancement ? r.enhancement.name : null,
+        attached_to: r.attached_to ?? null
       }))
     };
 
@@ -194,8 +226,19 @@ function RosterBuilder() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
-    .then(res => res.json())
-    .then(data => setViolations(data.violations));
+    .then(res => {
+      if (!res.ok) throw new Error(`Roster validation failed with status ${res.status}`);
+      return res.json() as Promise<{ violations: Violation[] }>;
+    })
+    .then(data => {
+      if (active) setViolations(data.violations);
+    })
+    .catch(error => {
+      console.error('Failed to validate roster', error);
+      if (active) {
+        setValidationError('Roster validation failed. Please check the backend and try again.');
+      }
+    });
 
     // Get AI Advice (We only ask for advice if the list is valid)
     // Note: For now we are hardcoding "gunline" until we add a playstyle selector
@@ -208,6 +251,9 @@ function RosterBuilder() {
     .then(data => setSuggestions(data.suggestions || []))
     .catch(() => setSuggestions([]));
 
+    return () => {
+      active = false;
+    };
   }, [roster, selectedFaction, selectedDetachment, pointsLimit]);
 
   useEffect(() => {
@@ -280,16 +326,35 @@ function RosterBuilder() {
       });
   };
 
-  const toggleWargear = (choiceName: string, replacesList: string[]) => {
+  const selectWargearChoice = (
+    choices: string[],
+    replaces: string[],
+    choiceName: string,
+    quantity: number,
+  ) => {
     setSelectedWargear(prev => {
-      const isSelected = prev.some(w => w.name === choiceName);
-      if (isSelected) {
-        return prev.filter(w => w.name !== choiceName);
-      } else {
-        return [...prev, { name: choiceName, replaced: replacesList }];
-      }
+      const withoutOption = prev.filter(w =>
+        !choices.includes(w.name) &&
+        !(
+          replaces.length > 0 &&
+          w.replaced.length === replaces.length &&
+          w.replaced.every((weapon, index) => weapon === replaces[index])
+        )
+      );
+      return choiceName && quantity > 0
+        ? [...withoutOption, { name: choiceName, replaced: replaces, quantity }]
+        : withoutOption;
     });
   };
+
+  const setWargearQuantity = (choiceName: string, quantity: number) => {
+    setSelectedWargear(prev =>
+      prev.map(w => w.name === choiceName ? { ...w, quantity } : w)
+    );
+  };
+
+  const getSelectedOptionChoice = (choices: string[]) =>
+    selectedWargear.find(w => w.quantity > 0 && choices.includes(w.name));
 
   const exportRoster = () => {
     const dataStr = JSON.stringify({
@@ -306,6 +371,65 @@ function RosterBuilder() {
     a.download = "my_40k_roster.json";
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const printRoster = () => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      window.alert('Please allow pop-ups to print your roster.');
+      return;
+    }
+
+    const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    })[character] || character);
+    const [factionId, subfaction] = selectedFaction.split('|', 2);
+    const factionName = factions.find(faction => faction.id === factionId)?.name || factionId;
+    const factionLabel = subfaction ? `${factionName} - ${subfaction}` : factionName;
+    const detachmentName = detachments.find(detachment => detachment.id === selectedDetachment)?.name
+      || selectedDetachment
+      || 'None';
+    const unitRows = roster.map(unit => {
+      const wargear = normalizeWargear(unit.wargear);
+      const details = [
+        `${unit.size} model${unit.size === 1 ? '' : 's'}`,
+        ...wargear.map(item => `${item.quantity > 1 ? `${item.quantity}x ` : ''}${item.name}`),
+        ...(unit.enhancement ? [`Enhancement: ${unit.enhancement.name}`] : []),
+      ];
+      return `<li>
+        <div class="unit-heading"><strong>${escapeHtml(unit.name)}</strong><strong>${unit.points} pts</strong></div>
+        <div>${details.map(detail => escapeHtml(detail)).join(' · ')}</div>
+      </li>`;
+    }).join('');
+
+    printWindow.document.write(`<!doctype html>
+      <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <title>${escapeHtml(factionLabel)} Roster</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #000; background: #fff; margin: 2rem; }
+            h1, p { margin: 0 0 0.75rem; }
+            ul { list-style: none; padding: 0; }
+            li { padding: 0.75rem 0; border-bottom: 1px solid #ccc; }
+            .unit-heading { display: flex; justify-content: space-between; margin-bottom: 0.35rem; }
+            @media print { body { margin: 1cm; } }
+          </style>
+        </head>
+        <body>
+          <h1>${escapeHtml(factionLabel)} Roster</h1>
+          <p><strong>Detachment:</strong> ${escapeHtml(detachmentName)}</p>
+          <p><strong>Total:</strong> ${totalPoints} pts</p>
+          <ul>${unitRows}</ul>
+        </body>
+      </html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
   };
 
   const importRoster = (event: ChangeEvent<HTMLInputElement>) => {
@@ -371,9 +495,18 @@ function RosterBuilder() {
   };
 
   const removeUnit = (index: number) => {
-    const newRoster = [...roster];
-    newRoster.splice(index, 1);
-    setRoster(newRoster);
+    const removedInstanceId = roster[index]?.instanceId;
+    setRoster(roster
+      .filter((_, rosterIndex) => rosterIndex !== index)
+      .map(unit => unit.attached_to === removedInstanceId
+        ? { ...unit, attached_to: null }
+        : unit));
+  };
+
+  const setAttachedTo = (characterId: string, bodyguardId: string | null) => {
+    setRoster(current => current.map(unit =>
+      unit.instanceId === characterId ? { ...unit, attached_to: bodyguardId } : unit
+    ));
   };
 
   const setWarlord = (instanceId: string) => {
@@ -402,7 +535,8 @@ function RosterBuilder() {
   const totalPoints = roster.reduce((sum, unit) => sum + unit.points, 0);
   // Calculate the live loadout preview for the Datacard
   // 1. Find all weapons that are part of the options (the ones you can swap to)
-  const allChoiceNames = selectedUnitDetails?.wargear_options?.flatMap(opt => opt.choices) || [];
+  const allChoiceNames = selectedUnitDetails?.wargear_options
+    ?.flatMap(opt => opt.choices.flatMap(choice => choice.split(' + '))) || [];
 
   // 2. The base weapons are those on the datasheet that are not optional choices
   const baseWeapons = selectedUnitDetails?.weapons
@@ -410,13 +544,16 @@ function RosterBuilder() {
     .map(w => w.name) || [];
 
   // 3. Find out which base weapons were replaced
-  const replacedWeapons = selectedWargear.flatMap(w => w.replaced || []);
+  const activeWargear = selectedWargear.filter(w => w.quantity > 0);
+  const replacedWeapons = activeWargear.flatMap(w => w.replaced || []);
 
   // 4. Remove the replaced weapons from the base list
   const remainingBaseWeapons = baseWeapons.filter(w => !replacedWeapons.includes(w));
 
   // 5. Add the new weapons the user selected
-  const newSelectedWeapons = selectedWargear.map(w => w.name);
+  const newSelectedWeapons = activeWargear.map(w =>
+    w.quantity > 1 ? `${w.quantity}x ${w.name}` : w.name
+  );
 
   // 6. Combine them
   const currentLoadout = Array.from(new Set([...remainingBaseWeapons, ...newSelectedWeapons]));
@@ -636,12 +773,16 @@ function RosterBuilder() {
           <button className="export-btn" onClick={exportRoster} disabled={roster.length === 0}>
             Save List
           </button>
+          <button className="export-btn" onClick={printRoster} disabled={roster.length === 0}>
+            🖨️ Print List
+          </button>
         </div>
       </header>
 
       <div className="main-content">
         <aside className="left-pane">
           <input type="text" placeholder="Search units..." value={search} onChange={(e) => setSearch(e.target.value)} className="search-input" />
+          {searchError && <p role="alert">{searchError}</p>}
           <div className="search-results">
             {Object.entries(groupedUnits).map(([groupName, units]) => {
               if (!units || units.length === 0) return null;
@@ -671,12 +812,13 @@ function RosterBuilder() {
           <div className="right-pane-header">
             <h2>Current Roster</h2>
             {roster.length > 0 && (
-              <div className={`validation-status ${violations.length === 0 ? 'valid' : 'invalid'}`}>
-                {violations.length === 0 ? '✅ List is Legal' : `❌ ${violations.length} Errors`}
+              <div className={`validation-status ${validationError || violations.length > 0 ? 'invalid' : 'valid'}`}>
+                {validationError ? '⚠️ Validation unavailable' : violations.length === 0 ? '✅ List is Legal' : `❌ ${violations.length} Errors`}
               </div>
             )}
           </div>
 
+          {validationError && <p role="alert">{validationError}</p>}
           {violations.length > 0 && (
             <div className="violations-box">
               {violations.map((v, i) => (
@@ -707,13 +849,48 @@ function RosterBuilder() {
                           <button className="remove-btn" onClick={(event) => { event.stopPropagation(); removeUnit(index); }}>X</button>
                         </div>
                       </div>
+                      {unit.keywords?.some(keyword => keyword.toUpperCase() === 'CHARACTER') &&
+                        !unit.keywords.some(keyword => ['VEHICLE', 'MONSTER'].includes(keyword.toUpperCase())) && (
+                          <label
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem', fontSize: '0.85rem' }}
+                            onClick={event => event.stopPropagation()}
+                          >
+                            <span>Attach to:</span>
+                            <select
+                              aria-label={`Attach ${unit.name} to a unit`}
+                              value={unit.attached_to ?? ''}
+                              onChange={event => setAttachedTo(unit.instanceId, event.target.value || null)}
+                            >
+                              <option value="">Select Unit</option>
+                              {roster
+                                .filter(candidate => !candidate.keywords?.some(keyword => keyword.toUpperCase() === 'CHARACTER'))
+                                .map(candidate => (
+                                  <option key={candidate.instanceId} value={candidate.instanceId}>
+                                    {candidate.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </label>
+                        )}
+                      {roster
+                        .filter(character =>
+                          character.attached_to === unit.instanceId &&
+                          character.keywords?.some(keyword => keyword.toUpperCase() === 'CHARACTER')
+                        )
+                        .map(character => (
+                          <div key={character.instanceId} style={{ marginTop: '0.35rem', color: '#b9a0ff', fontSize: '0.8rem' }}>
+                            🛡️ Led by {character.name}
+                          </div>
+                        ))}
                       {/* Bottom Row: Custom Wargear Loadout */}
                       {unit.wargear && unit.wargear.length > 0 && (
                         <div style={{ marginTop: '0.5rem', paddingLeft: '0.5rem', borderLeft: '2px solid #444' }}>
                           {normalizeWargear(unit.wargear).map((w, wIdx) => (
                             <div key={wIdx} style={{ fontSize: '0.8rem', color: '#aaa', marginTop: '0.2rem' }}>
                               <span style={{ color: '#00ffcc' }}>+</span>{' '}
-                              <span style={{ color: '#fff' }}>{w.name}</span>
+                              <span style={{ color: '#fff' }}>
+                                {w.quantity > 1 ? `${w.quantity}x ` : ''}{w.name}
+                              </span>
                               {w.replaced && w.replaced.length > 0 && (
                                 <span style={{ color: '#666' }}> (replaces {w.replaced.join(', ')})</span>
                               )}
@@ -907,21 +1084,42 @@ function RosterBuilder() {
                         <p style={{ margin: 0, color: '#ddd', fontSize: '0.9rem' }}>
                           Replace <strong>{opt.replaces.join(', ')}</strong> with:
                         </p>
-                        <ul style={{ margin: '0.5rem 0 0 1rem', padding: 0, fontSize: '0.85rem', color: '#aaa', listStyleType: 'none' }}>
-                          {opt.choices.map((choice, cIndex) => (
-                            <li key={cIndex} style={{ marginBottom: '0.4rem' }}>
-                              <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-                                <input
-                                  type="checkbox"
-                                  checked={selectedWargear.some(w => w.name === choice)}
-                                  onChange={() => toggleWargear(choice, opt.replaces)}
-                                  style={{ marginRight: '0.5rem', cursor: 'pointer' }}
-                                />
-                                {choice}
-                              </label>
-                            </li>
-                          ))}
-                        </ul>
+                        {(() => {
+                          const selectedChoice = getSelectedOptionChoice(opt.choices);
+                          return (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                              <select
+                                aria-label={`Replacement for ${opt.replaces.join(', ')}`}
+                                value={selectedChoice?.name ?? ''}
+                                onChange={event => selectWargearChoice(
+                                  opt.choices,
+                                  opt.replaces,
+                                  event.target.value,
+                                  1,
+                                )}
+                                style={{ flex: 1 }}
+                              >
+                                <option value="">Select replacement</option>
+                                {opt.choices.map(choice => (
+                                  <option key={choice} value={choice}>{choice}</option>
+                                ))}
+                              </select>
+                              <select
+                                aria-label={`Replacement quantity for ${opt.replaces.join(', ')}`}
+                                value={selectedChoice?.quantity ?? 1}
+                                disabled={!selectedChoice}
+                                onChange={event => selectedChoice && setWargearQuantity(
+                                  selectedChoice.name,
+                                  Number(event.target.value),
+                                )}
+                              >
+                                {Array.from({ length: selectedSize }, (_, index) => index + 1).map(quantity => (
+                                  <option key={quantity} value={quantity}>{quantity}</option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
@@ -932,7 +1130,16 @@ function RosterBuilder() {
             <div className="dc-footer" style={{ flexWrap: 'wrap', gap: '1rem' }}>
               <div className="dc-size-picker">
                 <label>UNIT SIZE</label>
-                <select value={selectedSize} onChange={(e) => setSelectedSize(Number(e.target.value))}>
+                <select
+                  value={selectedSize}
+                  onChange={event => {
+                    const size = Number(event.target.value);
+                    setSelectedSize(size);
+                    setSelectedWargear(previous =>
+                      previous.map(item => ({ ...item, quantity: Math.min(item.quantity, size) }))
+                    );
+                  }}
+                >
                   {selectedUnitDetails.points_options
                     .filter((opt, index, options) => options.findIndex(option => option.models === opt.models) === index)
                     .map(opt => (
@@ -945,7 +1152,8 @@ function RosterBuilder() {
 
               {selectedUnitDetails.available_enhancements &&
                selectedUnitDetails.available_enhancements.length > 0 &&
-               selectedUnitDetails.keywords.some(k => k.toUpperCase() === 'CHARACTER') && (
+               selectedUnitDetails.keywords.some(k => k.toUpperCase() === 'CHARACTER') &&
+               !selectedUnitDetails.keywords.some(k => k.toUpperCase() === 'EPIC HERO') && (
                 <>
                   <div className="dc-size-picker">
                     <label style={{ color: '#ffc107' }}>ENHANCEMENT</label>

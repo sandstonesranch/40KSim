@@ -36,17 +36,43 @@ class Roster:
     entries: list[RosterEntry] = field(default_factory=list)
 
 
+def _enhancement_cost(roster: Roster, entry: RosterEntry, ds: Dataset) -> int:
+    if not entry.enhancement:
+        return 0
+    det = next((d for d in ds.detachments if d.get("id") == roster.detachment_id), None)
+    for eid in (det or {}).get("enhancement_ids", []):
+        enh = ds.enhancements.find(eid)
+        if enh and enh.get("name") == entry.enhancement:
+            return enh.get("cost", 0)
+    return 0
+
+
+def _tier_for(unit, size: int, copies: int):
+    """First tier matching model count AND the roster-wide copy count."""
+    for tier in unit.points:
+        lo, hi = tier["models"], tier.get("models_max", tier["models"])
+        cmin = tier.get("unit_count_min") or 1
+        cmax = tier.get("unit_count_max")
+        if lo <= size <= hi and copies >= cmin and (cmax is None or copies <= cmax):
+            return tier
+    return None
+
+
 def compute_points(roster: Roster, ds: Dataset) -> int:
+    copies: dict[str, int] = {}
+    for e in roster.entries:
+        copies[e.datasheet_id] = copies.get(e.datasheet_id, 0) + 1
     total = 0
     for entry in roster.entries:
         unit = ds.units.find(entry.datasheet_id)
         if unit is None:
             continue
-        for tier in unit.points:
-            max_models = tier.get("models_max", tier["models"])
-            if tier["models"] <= entry.size <= max_models:
-                total += tier["cost"]
-                break
+        tier = _tier_for(unit, entry.size, copies[entry.datasheet_id])
+        if tier is None:   # invalid size: price at the nearest tier so the readout isn't 0
+            tier = min(unit.points, key=lambda t: abs(t["models"] - entry.size))
+        if tier:
+            total += tier["cost"]
+        total += _enhancement_cost(roster, entry, ds)
     return total
 
 
@@ -190,5 +216,48 @@ def validate(roster: Roster, ds: Dataset) -> list[Violation]:
                 ))
             else:
                 seen_enhancements.add(entry.enhancement)
+
+    # Rule 10: unknown datasheets (stale save / typo) must not silently cost 0
+    for entry in roster.entries:
+        if ds.units.find(entry.datasheet_id) is None:
+            violations.append(Violation("UNKNOWN_DATASHEET", Severity.ERROR,
+                f"Unknown unit '{entry.datasheet_id}'.", entry.instance_id))
+
+    # Rule 11: detachment must exist and belong to the roster's faction
+    det = next((d for d in ds.detachments if d.get("id") == roster.detachment_id), None)
+    if det is None:
+        violations.append(Violation("UNKNOWN_DETACHMENT", Severity.ERROR,
+            f"Unknown detachment '{roster.detachment_id}'."))
+    elif det.get("faction_id") != roster.faction_id:
+        violations.append(Violation("DETACHMENT_FACTION_MISMATCH", Severity.ERROR,
+            f"{det.get('name')} is not a {roster.faction_id} detachment."))
+    else:
+        # Rule 12: enhancement must be one of that detachment's, and eligible
+        by_name = {}
+        for eid in det.get("enhancement_ids", []):
+            enh = ds.enhancements.find(eid)
+            if enh:
+                by_name[enh["name"]] = enh
+        for entry in roster.entries:
+            if not entry.enhancement:
+                continue
+            unit = ds.units.find(entry.datasheet_id)
+            enh = by_name.get(entry.enhancement)
+            if enh is None:
+                violations.append(Violation("UNKNOWN_ENHANCEMENT", Severity.ERROR,
+                    f"'{entry.enhancement}' is not an enhancement of {det['name']}.", entry.instance_id))
+            elif unit is not None:
+                have = {k.upper() for k in unit.keywords} | {k.upper() for k in unit.faction_keywords} | {unit.name.upper()}
+                need = {k.upper() for k in enh.get("keyword_restrictions", [])}
+                if need and not (need & have):
+                    violations.append(Violation("ENHANCEMENT_RESTRICTED", Severity.ERROR,
+                        f"{unit.name} is not eligible for {enh['name']}.", entry.instance_id))
+
+    # Rule 13: Epic Heroes cannot take enhancements
+    for entry in roster.entries:
+        unit = ds.units.find(entry.datasheet_id)
+        if entry.enhancement and unit and "EPIC HERO" in [k.upper() for k in unit.keywords]:
+            violations.append(Violation("ENHANCEMENT_ON_EPIC_HERO", Severity.ERROR,
+                f"{unit.name} is an EPIC HERO and cannot take an enhancement.", entry.instance_id))
 
     return violations

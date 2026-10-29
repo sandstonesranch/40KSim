@@ -1,13 +1,15 @@
 import json
 import re
+from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
 from wh40kdc import Dataset
+from .mathhammer import Context, Target, expected_damage, profile_from_dataset
 from .validator import Roster, RosterEntry, validate
 from .ai.advisor import get_suggestions
 from .mcp_client import MCP_SERVER_DIR, call_mcp_tool
@@ -170,6 +172,23 @@ def normalize_rule_name(name: str) -> str:
     return name.casefold().replace("’", "'").strip()
 
 
+def parse_abilities_text(abilities_text: str) -> list[dict[str, str]]:
+    abilities = []
+    current_ability = None
+
+    for line in abilities_text.strip().splitlines():
+        match = re.match(r"\s*(?:-\s*)?\*\*(.+?):\*\*\s*(.*)", line)
+        if match:
+            current_ability = {"name": match.group(1), "text": match.group(2)}
+            abilities.append(current_ability)
+        elif current_ability and line.strip():
+            current_ability["text"] += f"\n{line.strip()}"
+
+    if not abilities and abilities_text.strip():
+        return [{"name": "Abilities", "text": abilities_text.strip()}]
+    return abilities
+
+
 def parse_mcp_stratagems(text: str) -> list[dict]:
     if text.startswith("No stratagems found"):
         return []
@@ -253,12 +272,37 @@ class EntryData(BaseModel):
     size: int
     is_warlord: bool = False
     enhancement: Optional[str] = None
+    attached_to: Optional[str] = None
 
 class RosterData(BaseModel):
     faction_id: str
     detachment_id: str
     points_limit: int
     entries: List[EntryData]
+
+
+class MathhammerContext(BaseModel):
+    models_firing: int = Field(default=1, ge=1)
+    in_half_range: bool = False
+    target_models: int = Field(default=1, ge=1)
+    hit_modifier: int = Field(default=0, ge=-10, le=10)
+    wound_modifier: int = Field(default=0, ge=-10, le=10)
+    reroll_hits: Literal["none", "ones", "all"] = "none"
+    reroll_wounds: Literal["none", "ones", "all"] = "none"
+
+
+class MathhammerRequest(BaseModel):
+    attacker_id: str
+    weapon_id: str
+    profile_index: int = Field(default=0, ge=0)
+    defender_toughness: int = Field(gt=0)
+    defender_save: int = Field(ge=2, le=7)
+    defender_wounds: int = Field(gt=0)
+    defender_invuln: Optional[int] = Field(default=None, ge=2, le=7)
+    defender_fnp: Optional[int] = Field(default=None, ge=2, le=6)
+    defender_keywords: list[str] = Field(default_factory=list)
+    context: MathhammerContext = Field(default_factory=MathhammerContext)
+
 
 @app.get("/")
 def read_root():
@@ -388,7 +432,7 @@ async def get_detachment_details(detachment_id: str):
     }
 
 @app.get("/api/search")
-def search_units(q: str = "", faction_id: str = "", limit: int = Query(60, ge=1, le=1000)):
+def search_units(q: str = "", faction_id: str = "", limit: int = Query(500, ge=1, le=1000)):
     results = ds.units
     if faction_id:
         if "|" in faction_id:
@@ -441,7 +485,7 @@ def get_unit_details(unit_id: str, detachment_id: str = ""):
         raw_stats = getattr(w, 'raw', {})
         profiles = raw_stats.get('profiles', [raw_stats]) if isinstance(raw_stats, dict) else [raw_stats]
 
-        for p in profiles:
+        for profile_index, p in enumerate(profiles):
             if not isinstance(p, dict) or not p:
                 continue
 
@@ -487,6 +531,8 @@ def get_unit_details(unit_id: str, detachment_id: str = ""):
                         clean_keywords.append(keyword["name"])
 
             weapons_data.append({
+                "id": w.id,
+                "profile_index": profile_index,
                 "name": w.name,
                 "stats": stats,
                 "keywords": clean_keywords,
@@ -498,14 +544,15 @@ def get_unit_details(unit_id: str, detachment_id: str = ""):
     for w in getattr(unit, 'wargear_options', []):
         raw = getattr(w, 'raw', w)
 
-        replaces_ids = raw.get('replaces', [])
-        choice_ids = raw.get('replacement_choice', [])
+        replaces_ids = raw.get('replaces', []) or []
+        choice_options = raw.get('replacement', raw.get('replacement_choice', [])) or []
 
-        replaces_names = [get_weapon_name(rid) for rid in replaces_ids]
+        replaces_names = [get_weapon_name(weapon_id) for weapon_id in replaces_ids]
         choice_names = [
-            get_weapon_name(choice_id)
-            for choice in choice_ids
-            for choice_id in (choice if isinstance(choice, list) else [choice])
+            " + ".join(get_weapon_name(weapon_id) for weapon_id in choice)
+            if isinstance(choice, list)
+            else get_weapon_name(choice)
+            for choice in choice_options
         ]
 
         wargear_data.append({
@@ -620,13 +667,22 @@ async def get_codex_unit(unit_name: str, faction: str = ""):
     if not unit:
         raise HTTPException(status_code=404, detail="Datasheet not found")
 
-    datasheet_text = await call_40k_tool(
+    raw_text = await call_40k_tool(
         "get_unit",
         {"faction": mcp_faction_id(unit.faction_id), "name": unit.name},
     )
+    # Extract ONLY the Abilities section
+    abilities_match = re.search(r'##\s*Abilities\s*(.*?)(?=##|$)', raw_text, re.DOTALL | re.IGNORECASE)
+
+    if abilities_match:
+        abilities_text = abilities_match.group(1)
+        parsed = parse_abilities_text(abilities_text)
+    else:
+        parsed = []
+
     return {
         "name": unit.name,
-        "abilities": [{"name": "Datasheet", "text": datasheet_text}],
+        "abilities": parsed,
     }
 
 @app.get("/api/codex/enhancement/{enhancement_name}")
@@ -719,16 +775,65 @@ async def get_keyword_definition(keyword_name: str):
         "definition": "No definition found for this keyword.",
     }
 
+
+@app.post("/api/mathhammer")
+def calculate_mathhammer(request: MathhammerRequest):
+    attacker = ds.units.find(request.attacker_id)
+    if attacker is None:
+        raise HTTPException(status_code=404, detail="Attacker datasheet not found")
+
+    weapon = next(
+        (item for item in attacker.weapons if item.id == request.weapon_id),
+        None,
+    )
+    if weapon is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Weapon '{request.weapon_id}' not found on {attacker.name}",
+        )
+
+    profiles = weapon.raw.get("profiles", [])
+    if request.profile_index >= len(profiles):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Weapon profile {request.profile_index} not found",
+        )
+
+    profile = profile_from_dataset(weapon.raw, profiles[request.profile_index])
+    target = Target(
+        toughness=request.defender_toughness,
+        save=request.defender_save,
+        wounds=request.defender_wounds,
+        invuln=request.defender_invuln,
+        fnp=request.defender_fnp,
+        keywords=frozenset(keyword.upper() for keyword in request.defender_keywords),
+    )
+    result = expected_damage(
+        profile,
+        target,
+        Context(**request.context.model_dump()),
+    )
+    return {
+        "attacker_id": attacker.id,
+        "attacker_name": attacker.name,
+        "weapon_id": weapon.id,
+        "weapon_name": weapon.name,
+        "profile_index": request.profile_index,
+        "profile_name": profiles[request.profile_index].get("name", ""),
+        "result": asdict(result),
+    }
+
+
 @app.post("/api/validate")
 def validate_roster(roster_data: RosterData):
-    entries = [RosterEntry(instance_id=e.instance_id, datasheet_id=e.datasheet_id, size=e.size, is_warlord=e.is_warlord, enhancement=e.enhancement) for e in roster_data.entries]
+    entries = [RosterEntry(instance_id=e.instance_id, datasheet_id=e.datasheet_id, size=e.size, is_warlord=e.is_warlord, enhancement=e.enhancement, attached_to=e.attached_to) for e in roster_data.entries]
     roster = Roster(faction_id=roster_data.faction_id, detachment_id=roster_data.detachment_id, points_limit=roster_data.points_limit, entries=entries)
     violations = validate(roster, ds)
     return {"violations": [v.__dict__ for v in violations]}
 
 @app.post("/api/advise")
 def get_advice(roster_data: RosterData):
-    entries = [RosterEntry(instance_id=e.instance_id, datasheet_id=e.datasheet_id, size=e.size, is_warlord=e.is_warlord, enhancement=e.enhancement) for e in roster_data.entries]
+    entries = [RosterEntry(instance_id=e.instance_id, datasheet_id=e.datasheet_id, size=e.size, is_warlord=e.is_warlord, enhancement=e.enhancement, attached_to=e.attached_to) for e in roster_data.entries]
     roster = Roster(faction_id=roster_data.faction_id, detachment_id=roster_data.detachment_id, points_limit=roster_data.points_limit, entries=entries)
     suggestions = get_suggestions(roster, "gunline", ds)
     return {"suggestions": [s.__dict__ for s in suggestions]}
