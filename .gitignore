@@ -1,0 +1,12 @@
+# Ignore cloned engines
+engine/
+
+# Ignore Python and Node environments
+venv/
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Ignore databases and local data
+data-schema/factions/

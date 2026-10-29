@@ -1,0 +1,23 @@
+{
+  "archetypes": {
+    "gunline": {
+      "name": "Gunline",
+      "description": "Stay back, shoot hard, hold objectives.",
+      "expected_roles": [
+        "anti-tank",
+        "anti-infantry",
+        "objective-holder",
+        "screening"
+      ]
+    },
+    "melee-pressure": {
+      "name": "Melee Pressure",
+      "description": "Run at the enemy and punch them.",
+      "expected_roles": [
+        "melee-threat",
+        "screening",
+        "objective-holder"
+      ]
+    }
+  }
+}

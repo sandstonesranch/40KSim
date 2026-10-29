@@ -1,0 +1,28 @@
+{
+  "units": {
+    "intercessor-squad": {
+      "roles": [
+        "anti-infantry",
+        "objective-holder"
+      ]
+    },
+    "eliminator-squad": {
+      "roles": [
+        "anti-tank",
+        "anti-character"
+      ]
+    },
+    "assault-intercessor-squad": {
+      "roles": [
+        "melee-threat",
+        "objective-holder"
+      ]
+    },
+    "incursor-squad": {
+      "roles": [
+        "screening",
+        "objective-holder"
+      ]
+    }
+  }
+}

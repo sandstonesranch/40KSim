@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": ["./roster_creator/src"],
+    "python.testing.pytestArgs": ["roster_creator/tests"],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+}
