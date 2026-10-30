@@ -229,3 +229,77 @@ def test_faction_mismatch_names_each_offender(ds):
                E("n1", "necron-warriors", 10), E("n2", "necron-warriors", 10))
     mism = [v.entry_id for v in validate(r, ds) if v.code == "FACTION_MISMATCH"]
     assert mism == ["n1", "n2"]
+
+
+# ───────────── 7. Battle-size copy and enhancement caps ─────────────
+
+@pytest.mark.parametrize(
+    "limit,count,expected_violation",
+    [(1000, 2, False), (1000, 3, True), (2000, 3, False), (2000, 4, True)],
+)
+def test_character_copy_limit_scales_with_battle_size(ds, limit, count, expected_violation):
+    entries = [E(f"captain-{index}", "captain", is_warlord=index == 0) for index in range(count)]
+    assert ("RULE_OF_THREE" in codes(roster(limit, *entries), ds)) is expected_violation
+
+
+@pytest.mark.parametrize(
+    "limit,count,expected_violation",
+    [(1000, 4, False), (1000, 5, True), (2000, 6, False), (2000, 7, True)],
+)
+def test_battleline_copy_limit_is_double(ds, limit, count, expected_violation):
+    entries = [E("captain", "captain", is_warlord=True)] + [
+        E(f"intercessors-{index}", "intercessor-squad", 5)
+        for index in range(count)
+    ]
+    assert ("RULE_OF_THREE" in codes(roster(limit, *entries), ds)) is expected_violation
+
+
+@pytest.mark.parametrize(
+    "limit,count,expected_violation",
+    [(1000, 2, False), (1000, 3, True), (2000, 4, False), (2000, 5, True)],
+)
+def test_enhancement_cap_scales_with_battle_size(ds, limit, count, expected_violation):
+    entries = [
+        E(
+            f"captain-{index}",
+            "captain",
+            is_warlord=index == 0,
+            enhancement=f"Enhancement {index}",
+        )
+        for index in range(count)
+    ]
+    assert ("ENHANCEMENT_CAP_EXCEEDED" in codes(roster(limit, *entries), ds)) is expected_violation
+
+
+# ───────────── 8. Leader attachments ─────────────
+
+def test_legal_leader_bodyguard_attachment_passes(ds):
+    r = roster(
+        2000,
+        E("captain", "captain", is_warlord=True, attached_to="intercessors"),
+        E("intercessors", "intercessor-squad", 5),
+    )
+    assert "ILLEGAL_LEADER_ATTACHMENT" not in codes(r, ds)
+
+
+def test_leader_cannot_attach_to_non_bodyguard(ds):
+    r = roster(
+        2000,
+        E("captain", "captain", is_warlord=True, attached_to="rhino"),
+        E("rhino", "rhino"),
+    )
+    assert "ILLEGAL_LEADER_ATTACHMENT" in codes(r, ds)
+
+
+def test_unit_cannot_attach_to_itself(ds):
+    r = roster(2000, E("captain", "captain", is_warlord=True, attached_to="captain"))
+    assert "LEADER_ATTACHMENT_SELF" in codes(r, ds)
+
+
+def test_leader_attachment_cycle_is_reported(ds):
+    r = roster(
+        2000,
+        E("captain", "captain", is_warlord=True, attached_to="intercessors"),
+        E("intercessors", "intercessor-squad", 5, attached_to="captain"),
+    )
+    assert "LEADER_ATTACHMENT_CYCLE" in codes(r, ds)

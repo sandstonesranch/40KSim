@@ -186,12 +186,13 @@ def test_enhancement_on_non_character_fails(ds):
 
 
 def test_enhancement_cap_exceeded_fails(ds):
-    # Taking 4 enhancements should fail, even if they are all on Characters
+    # Strike Force allows 4 enhancements; taking 5 should fail.
     roster = make_roster(2000, [
         RosterEntry(instance_id="a1", datasheet_id="Captain", size=1, is_warlord=True, enhancement="Artificer Armour"),
         RosterEntry(instance_id="a2", datasheet_id="Captain", size=1, enhancement="Bolter Discipline"),
         RosterEntry(instance_id="a3", datasheet_id="Captain", size=1, enhancement="Adept of the Codex"),
         RosterEntry(instance_id="a4", datasheet_id="Captain", size=1, enhancement="Fire Discipline"),
+        RosterEntry(instance_id="a5", datasheet_id="Captain", size=1, enhancement="Enhancement Five"),
     ])
     violations = validate(roster, ds)
     codes = {v.code for v in violations}

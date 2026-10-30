@@ -93,7 +93,51 @@ function RosterBuilder() {
   const [savedData] = useState<SavedRosterData>(() => {
     try {
       const saved = localStorage.getItem('40k_roster_data');
-      return saved ? JSON.parse(saved) as SavedRosterData : {};
+      if (!saved) return {};
+
+      const parsed: unknown = JSON.parse(saved);
+      if (!isRecord(parsed)) return {};
+      const roster = Array.isArray(parsed.roster)
+        ? parsed.roster.flatMap((item): RosterItem[] => {
+            if (!isRecord(item)) return [];
+            const { id, name, instanceId, size, points } = item;
+            if (
+              typeof id !== 'string' ||
+              typeof name !== 'string' ||
+              typeof instanceId !== 'string' ||
+              typeof size !== 'number' ||
+              !Number.isFinite(size) ||
+              typeof points !== 'number' ||
+              !Number.isFinite(points)
+            ) {
+              return [];
+            }
+
+            return [{
+              id,
+              name,
+              instanceId,
+              size,
+              points,
+              is_warlord: item.is_warlord === true,
+              wargear: normalizeWargear(item.wargear),
+              keywords: Array.isArray(item.keywords)
+                ? item.keywords.filter((keyword): keyword is string => typeof keyword === 'string')
+                : [],
+              enhancement: item.enhancement ?? null,
+              attached_to: typeof item.attached_to === 'string' ? item.attached_to : null,
+            }];
+          })
+        : [];
+
+      return {
+        roster,
+        selectedFaction: typeof parsed.selectedFaction === 'string' ? parsed.selectedFaction : undefined,
+        selectedDetachment: typeof parsed.selectedDetachment === 'string' ? parsed.selectedDetachment : undefined,
+        pointsLimit: typeof parsed.pointsLimit === 'number' && Number.isFinite(parsed.pointsLimit)
+          ? parsed.pointsLimit
+          : undefined,
+      };
     } catch (error) {
       console.error('Failed to load saved roster data', error);
       return {};
@@ -120,13 +164,16 @@ function RosterBuilder() {
   const [openGroups, setOpenGroups] = useState<{ [key: string]: boolean }>({ Characters: true, Battleline: true, "Other Units": true });
 
   const [roster, setRoster] = useState<RosterItem[]>(
-    (savedData.roster || []).map(item => ({ ...item, wargear: normalizeWargear(item.wargear) }))
+    savedData.roster || []
   );
   const [violations, setViolations] = useState<Violation[]>([]);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
 
   const [selectedUnitDetails, setSelectedUnitDetails] = useState<UnitDetails | null>(null);
+  const [unitDetailsError, setUnitDetailsError] = useState<string | null>(null);
+  const [legalBodyguardIds, setLegalBodyguardIds] = useState<Record<string, string[]>>({});
+  const [leaderAttachmentErrors, setLeaderAttachmentErrors] = useState<Record<string, string>>({});
   const [unitRulesText, setUnitRulesText] = useState<{ name: string; text: string }[]>([]);
   const [selectedSize, setSelectedSize] = useState<number>(0);
   const [selectedWargear, setSelectedWargear] = useState<WargearSelection[]>([]);
@@ -135,6 +182,56 @@ function RosterBuilder() {
   const [detachmentDetails, setDetachmentDetails] = useState<DetachmentDetails | null>(null);
   const [keywordPopup, setKeywordPopup] = useState<{ name: string; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const leaders = roster.filter(unit =>
+      unit.keywords.some(keyword => keyword.toUpperCase() === 'CHARACTER') &&
+      !unit.keywords.some(keyword => ['VEHICLE', 'MONSTER'].includes(keyword.toUpperCase()))
+    );
+    if (leaders.length === 0) {
+      setLegalBodyguardIds({});
+      setLeaderAttachmentErrors({});
+      return;
+    }
+
+    let active = true;
+    Promise.all(leaders.map(async leader => {
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:8000/api/legal-bodyguards/${encodeURIComponent(leader.id)}`
+        );
+        if (!response.ok) {
+          throw new Error(`Legal bodyguard lookup failed with status ${response.status}`);
+        }
+        const bodyguards: unknown = await response.json();
+        if (!Array.isArray(bodyguards) || !bodyguards.every(id => typeof id === 'string')) {
+          throw new Error('Legal bodyguard lookup returned an invalid response.');
+        }
+        return { instanceId: leader.instanceId, bodyguards, error: null };
+      } catch (error) {
+        console.error(`Failed to load legal bodyguards for ${leader.name}`, error);
+        return {
+          instanceId: leader.instanceId,
+          bodyguards: [],
+          error: 'Could not load legal bodyguards. Check the backend and try again.',
+        };
+      }
+    })).then(results => {
+      if (!active) return;
+      setLegalBodyguardIds(Object.fromEntries(
+        results.map(result => [result.instanceId, result.bodyguards])
+      ));
+      setLeaderAttachmentErrors(Object.fromEntries(
+        results
+          .filter(result => result.error)
+          .map(result => [result.instanceId, result.error as string])
+      ));
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [roster]);
 
   // 1. Fetch Factions
   useEffect(() => {
@@ -270,10 +367,19 @@ function RosterBuilder() {
   }, [roster, selectedFaction, selectedDetachment, pointsLimit]);
 
   const openUnitModal = (unitId: string, instanceId: string | null = null) => {
-    fetch(`http://127.0.0.1:8000/api/units/${unitId}?detachment_id=${selectedDetachment}`)
+    setUnitDetailsError(null);
+    setSelectedUnitDetails(null);
+    fetch(`http://127.0.0.1:8000/api/units/${encodeURIComponent(unitId)}?detachment_id=${encodeURIComponent(selectedDetachment)}`)
       .then(async res => {
-        if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
-        return res.json();
+        if (!res.ok) {
+          const errorBody = await res.json().catch(() => null);
+          throw new Error(errorBody?.detail || `Unit lookup failed with status ${res.status}.`);
+        }
+        const data: unknown = await res.json();
+        if (!isRecord(data) || typeof data.id !== 'string' || typeof data.name !== 'string' || !Array.isArray(data.keywords)) {
+          throw new Error('The unit details response is invalid.');
+        }
+        return data as UnitDetails;
       })
       .then(data => {
         setSelectedUnitDetails(data);
@@ -309,6 +415,7 @@ function RosterBuilder() {
       .catch(error => {
         console.error('Failed to load unit details', error);
         setSelectedUnitDetails(null);
+        setUnitDetailsError(error instanceof Error ? error.message : 'Could not load unit details.');
       });
   };
 
@@ -869,6 +976,7 @@ function RosterBuilder() {
           </div>
 
           {validationError && <p role="alert">{validationError}</p>}
+          {unitDetailsError && <p role="alert">{unitDetailsError}</p>}
           {violations.length > 0 && (
             <div className="violations-box">
               {violations.map((v, i) => (
@@ -913,7 +1021,9 @@ function RosterBuilder() {
                             >
                               <option value="">Select Unit</option>
                               {roster
-                                .filter(candidate => !candidate.keywords?.some(keyword => keyword.toUpperCase() === 'CHARACTER'))
+                                .filter(candidate =>
+                                  legalBodyguardIds[unit.instanceId]?.includes(candidate.id)
+                                )
                                 .map(candidate => (
                                   <option key={candidate.instanceId} value={candidate.instanceId}>
                                     {candidate.name}
@@ -922,6 +1032,11 @@ function RosterBuilder() {
                             </select>
                           </label>
                         )}
+                      {leaderAttachmentErrors[unit.instanceId] && (
+                        <p role="alert" style={{ margin: '0.35rem 0 0', color: '#ff8585', fontSize: '0.8rem' }}>
+                          {leaderAttachmentErrors[unit.instanceId]}
+                        </p>
+                      )}
                       {roster
                         .filter(character =>
                           character.attached_to === unit.instanceId &&

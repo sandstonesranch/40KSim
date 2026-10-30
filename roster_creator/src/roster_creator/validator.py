@@ -58,6 +58,14 @@ def _tier_for(unit, size: int, copies: int):
     return None
 
 
+def _battle_size_limits(points_limit: int) -> tuple[str, int, int]:
+    if points_limit <= 1000:
+        return "Incursion", 2, 2
+    if points_limit <= 2000:
+        return "Strike Force", 3, 4
+    return "Onslaught", 3, 4
+
+
 def compute_points(roster: Roster, ds: Dataset) -> int:
     copies: dict[str, int] = {}
     for e in roster.entries:
@@ -78,6 +86,7 @@ def compute_points(roster: Roster, ds: Dataset) -> int:
 
 def validate(roster: Roster, ds: Dataset) -> list[Violation]:
     violations: list[Violation] = []
+    battle_size, copy_limit, enhancement_limit = _battle_size_limits(roster.points_limit)
 
     # Rule 1: points limit
     total = compute_points(roster, ds)
@@ -150,22 +159,25 @@ def validate(roster: Roster, ds: Dataset) -> list[Violation]:
                     entry_id=entry.instance_id,
                 ))
 
-    # Rule 6: Rule of Three
+    # Rule 6: battle-size datasheet limits
     datasheet_counts = {}
     for entry in roster.entries:
         datasheet_counts[entry.datasheet_id] = datasheet_counts.get(entry.datasheet_id, 0) + 1
 
     for datasheet_id, count in datasheet_counts.items():
-        if count > 3:
-            unit = ds.units.find(datasheet_id)
-            if unit:
-                keywords = [k.upper() for k in unit.keywords]
-                if "BATTLELINE" not in keywords and "DEDICATED TRANSPORT" not in keywords:
-                    violations.append(Violation(
-                        code="RULE_OF_THREE",
-                        severity=Severity.ERROR,
-                        message=f"You cannot take more than 3 of {unit.name} (found {count}).",
-                    ))
+        unit = ds.units.find(datasheet_id)
+        if unit:
+            keywords = {keyword.upper() for keyword in unit.keywords}
+            unit_limit = copy_limit * (2 if "BATTLELINE" in keywords else 1)
+            if count > unit_limit and "DEDICATED TRANSPORT" not in keywords:
+                violations.append(Violation(
+                    code="RULE_OF_THREE",
+                    severity=Severity.ERROR,
+                    message=(
+                        f"{battle_size} allows at most {unit_limit} copies of "
+                        f"{unit.name} (found {count})."
+                    ),
+                ))
 
     # Rule 7: Enhancements
     enhancements_count = 0
@@ -184,11 +196,14 @@ def validate(roster: Roster, ds: Dataset) -> list[Violation]:
                         entry_id=entry.instance_id,
                     ))
 
-    if enhancements_count > 3:
+    if enhancements_count > enhancement_limit:
         violations.append(Violation(
             code="ENHANCEMENT_CAP_EXCEEDED",
             severity=Severity.ERROR,
-            message=f"Roster has {enhancements_count} enhancements. The maximum allowed is 3.",
+            message=(
+                f"{battle_size} allows at most {enhancement_limit} enhancements; "
+                f"roster has {enhancements_count}."
+            ),
         ))
 
     # Rule 8: Faction Mismatch
@@ -223,7 +238,68 @@ def validate(roster: Roster, ds: Dataset) -> list[Violation]:
             violations.append(Violation("UNKNOWN_DATASHEET", Severity.ERROR,
                 f"Unknown unit '{entry.datasheet_id}'.", entry.instance_id))
 
-    # Rule 11: detachment must exist and belong to the roster's faction
+    # Rule 11: leader attachments must target a legal bodyguard and be acyclic.
+    entries_by_id = {entry.instance_id: entry for entry in roster.entries}
+    for entry in roster.entries:
+        if not entry.attached_to:
+            continue
+        if entry.attached_to == entry.instance_id:
+            violations.append(Violation(
+                "LEADER_ATTACHMENT_SELF",
+                Severity.ERROR,
+                "A unit cannot attach to itself.",
+                entry.instance_id,
+            ))
+            continue
+
+        target = entries_by_id.get(entry.attached_to)
+        if target is None:
+            violations.append(Violation(
+                "LEADER_ATTACHMENT_TARGET_NOT_FOUND",
+                Severity.ERROR,
+                f"Attached unit '{entry.attached_to}' is not in the roster.",
+                entry.instance_id,
+            ))
+            continue
+
+        leader = ds.units.find(entry.datasheet_id)
+        target_unit = ds.units.find(target.datasheet_id)
+        if leader is None or target_unit is None:
+            continue
+
+        legal_bodyguard_ids = {
+            bodyguard.id for bodyguard in ds.bodyguards_attachable_from(leader.id)
+        }
+        if target_unit.id not in legal_bodyguard_ids:
+            violations.append(Violation(
+                "ILLEGAL_LEADER_ATTACHMENT",
+                Severity.ERROR,
+                f"{leader.name} cannot attach to {target_unit.name}.",
+                entry.instance_id,
+            ))
+
+    completed_attachment_paths = set()
+    for entry in roster.entries:
+        path = []
+        path_positions = {}
+        current = entry
+        while current is not None and current.instance_id not in completed_attachment_paths:
+            if current.instance_id in path_positions:
+                cycle = path[path_positions[current.instance_id]:]
+                if len(cycle) > 1:
+                    violations.append(Violation(
+                        "LEADER_ATTACHMENT_CYCLE",
+                        Severity.ERROR,
+                        "Leader attachments cannot create a cycle.",
+                        current.instance_id,
+                    ))
+                break
+            path_positions[current.instance_id] = len(path)
+            path.append(current)
+            current = entries_by_id.get(current.attached_to) if current.attached_to else None
+        completed_attachment_paths.update(item.instance_id for item in path)
+
+    # Rule 12: detachment must exist and belong to the roster's faction
     det = next((d for d in ds.detachments if d.get("id") == roster.detachment_id), None)
     if det is None:
         violations.append(Violation("UNKNOWN_DETACHMENT", Severity.ERROR,

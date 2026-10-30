@@ -468,7 +468,7 @@ def search_units(q: str = "", faction_id: str = "", limit: int = Query(500, ge=1
 def get_unit_details(unit_id: str, detachment_id: str = ""):
     unit = ds.units.find(unit_id)
     if not unit:
-        return {"error": "Unit not found"}
+        raise HTTPException(status_code=404, detail="Unit not found")
 
     profile = unit.profile_at(0) if unit.profile_count > 0 else {}
 
@@ -633,6 +633,18 @@ def get_unit_details(unit_id: str, detachment_id: str = ""):
         "points_options": points_options,
         "available_enhancements": available_enhancements
     }
+
+
+@app.get("/api/legal-bodyguards/{unit_id}")
+def get_legal_bodyguards(unit_id: str) -> list[str]:
+    unit = ds.units.find(unit_id)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="Unit not found")
+    return [
+        bodyguard.id
+        for bodyguard in ds.bodyguards_attachable_from(unit.id)
+    ]
+
 
 @app.get("/api/codex/detachment/{detachment_name}")
 async def get_codex_detachment(detachment_name: str, faction: str = ""):
