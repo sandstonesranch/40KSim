@@ -53,6 +53,9 @@ const normalizeWargear = (wargear: unknown): WargearSelection[] => {
   });
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
 type DetachmentDetails = {
   id?: string;
   name: string;
@@ -432,29 +435,76 @@ function RosterBuilder() {
     printWindow.print();
   };
 
-  const importRoster = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleImport = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
-        const data = JSON.parse(e.target?.result as string);
-        if (Array.isArray(data.roster)) {
-          setRoster(data.roster.map((item: RosterItem) => ({
-            ...item,
-            wargear: normalizeWargear(item.wargear),
-          })));
-          if (data.selectedFaction) setSelectedFaction(data.selectedFaction);
-          if (data.selectedDetachment) setSelectedDetachment(data.selectedDetachment);
-          if (data.pointsLimit) setPointsLimit(data.pointsLimit);
-        } else {
-          alert("Invalid roster file format.");
+        const content = e.target?.result;
+        if (typeof content !== 'string') {
+          throw new Error('The selected file could not be read as text.');
         }
+
+        const data: unknown = JSON.parse(content);
+        if (!isRecord(data) ||
+          typeof data.selectedFaction !== 'string' ||
+          typeof data.selectedDetachment !== 'string' ||
+          typeof data.pointsLimit !== 'number' ||
+          !Number.isFinite(data.pointsLimit) ||
+          !Array.isArray(data.roster)) {
+          throw new Error('Invalid roster file format.');
+        }
+
+        const importedRoster = data.roster.map((item: unknown) => {
+          if (!isRecord(item)) {
+            throw new Error('Invalid unit entry in roster file.');
+          }
+
+          const { id, name, instanceId, size, points } = item;
+          if (
+            typeof id !== 'string' ||
+            typeof name !== 'string' ||
+            typeof instanceId !== 'string' ||
+            typeof size !== 'number' ||
+            !Number.isFinite(size) ||
+            typeof points !== 'number' ||
+            !Number.isFinite(points)
+          ) {
+            throw new Error('Invalid unit entry in roster file.');
+          }
+
+          return {
+            id,
+            name,
+            instanceId,
+            size,
+            points,
+            is_warlord: item.is_warlord === true,
+            wargear: normalizeWargear(item.wargear),
+            keywords: Array.isArray(item.keywords)
+              ? item.keywords.filter((keyword): keyword is string => typeof keyword === 'string')
+              : [],
+            enhancement: item.enhancement ?? null,
+            attached_to: typeof item.attached_to === 'string' ? item.attached_to : null,
+          };
+        });
+
+        setSelectedFaction(data.selectedFaction);
+        setSelectedDetachment(data.selectedDetachment);
+        setPointsLimit(data.pointsLimit);
+        setRoster(importedRoster);
       } catch (error) {
         console.error('Failed to parse imported roster', error);
-        alert("Failed to read the file. Make sure it's a valid JSON roster.");
+        alert(error instanceof Error && error.message === 'Invalid roster file format.'
+          ? error.message
+          : "Failed to read the file. Make sure it's a valid roster JSON file.");
       }
+    };
+    reader.onerror = () => {
+      console.error('Failed to read imported roster file', reader.error);
+      alert('Failed to read the selected roster file.');
     };
     reader.readAsText(file);
 
@@ -764,7 +814,7 @@ function RosterBuilder() {
             type="file"
             accept=".json"
             ref={fileInputRef}
-            onChange={importRoster}
+            onChange={handleImport}
             style={{ display: 'none' }}
           />
           <button className="import-btn" onClick={() => fileInputRef.current?.click()}>
