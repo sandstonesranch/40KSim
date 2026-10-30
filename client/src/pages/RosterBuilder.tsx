@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, type ChangeEvent } from 'react';
+import { Link } from 'react-router-dom';
 import '../App.css';
 import RulesText from '../components/RulesText';
 
@@ -159,6 +160,7 @@ function RosterBuilder() {
   const [pointsLimit, setPointsLimit] = useState<number>(savedData.pointsLimit || 2000);
 
   const [search, setSearch] = useState("");
+  const [unitCategoryFilter, setUnitCategoryFilter] = useState("all");
   const [groupedUnits, setGroupedUnits] = useState<GroupedUnits>({});
   const [searchError, setSearchError] = useState<string | null>(null);
   const [openGroups, setOpenGroups] = useState<{ [key: string]: boolean }>({
@@ -733,6 +735,18 @@ function RosterBuilder() {
   };
 
   const totalPoints = roster.reduce((sum, unit) => sum + unit.points, 0);
+  const remainingPoints = Math.max(pointsLimit - totalPoints, 0);
+  const rosterModelCount = roster.reduce((sum, unit) => sum + unit.size, 0);
+  const rosterCharacterCount = roster.filter(unit =>
+    unit.keywords.some(keyword => keyword.toUpperCase() === 'CHARACTER')
+  ).length;
+  const rosterBattlelineCount = roster.filter(unit =>
+    unit.keywords.some(keyword => keyword.toUpperCase() === 'BATTLELINE')
+  ).length;
+  const rosterVehicleCount = roster.filter(unit =>
+    unit.keywords.some(keyword => keyword.toUpperCase() === 'VEHICLE')
+  ).length;
+  const rosterProgress = pointsLimit > 0 ? Math.min((totalPoints / pointsLimit) * 100, 100) : 0;
   // Calculate the live loadout preview for the Datacard
   // 1. Find all weapons that are part of the options (the ones you can swap to)
   const allChoiceNames = selectedUnitDetails?.wargear_options
@@ -904,10 +918,13 @@ function RosterBuilder() {
   }
 
   return (
-    <div className="app-container">
+    <div className="app-container roster-screen">
       <header className="top-bar">
         <div className="header-left">
-          <h1>40Ksim Roster Builder</h1>
+          <div className="roster-terminal-brand">
+            <span className="roster-terminal-kicker">TACTICAL COGITATOR // ARRAY 01</span>
+            <h1>40Ksim Roster Builder</h1>
+          </div>
 
           {/* UPDATED HEADER CONTROLS */}
           <div className="header-controls">
@@ -915,7 +932,7 @@ function RosterBuilder() {
               {selectedFaction.includes('|') ? (
                 <>
                   {factions.find(f => f.id === selectedFaction.split('|')[0])?.name || selectedFaction.split('|')[0]}
-                  <span style={{ color: '#8a2be2', margin: '0 0.5rem' }}>›</span>
+                  <span style={{ color: 'var(--border-gold)', margin: '0 0.5rem' }}>›</span>
                   {selectedFaction.split('|')[1]}
                 </>
               ) : (
@@ -980,12 +997,82 @@ function RosterBuilder() {
       </header>
 
       <div className="main-content">
+        <nav className="roster-rail" aria-label="Roster console">
+          <span className="roster-rail-heading">TACTICAL CONSOLE</span>
+          <a className="roster-rail-link active" href="#current-roster">
+            <span aria-hidden="true">▤</span>
+            <span>Muster Roster</span>
+          </a>
+          <a className="roster-rail-link" href="#datasheet-list">
+            <span aria-hidden="true">⌕</span>
+            <span>Holy Datasheets</span>
+          </a>
+          <Link className="roster-rail-link" to="/codex">
+            <span aria-hidden="true">✣</span>
+            <span>Stratagems &amp; Liturgies</span>
+          </Link>
+          <a className="roster-rail-link" href="#validation-diagnostics">
+            <span aria-hidden="true">⚠</span>
+            <span>Validation Diagnostics</span>
+          </a>
+          <a className="roster-rail-link" href="#points-overview">
+            <span aria-hidden="true">◉</span>
+            <span>Cogitator Telemetry</span>
+          </a>
+          <Link className="roster-rail-link" to="/">
+            <span aria-hidden="true">⌂</span>
+            <span>Main Terminal</span>
+          </Link>
+          <Link className="roster-rail-link" to="/game">
+            <span aria-hidden="true">⚔</span>
+            <span>Battle Simulator</span>
+          </Link>
+          <Link className="roster-rail-link" to="/profile">
+            <span aria-hidden="true">◉</span>
+            <span>Operative Profile</span>
+          </Link>
+          <div className="roster-rail-footer">
+            <span>DOCTRINA DIRECTIVES</span>
+            <span>COGITATOR ONLINE</span>
+          </div>
+        </nav>
+
         <aside className="left-pane">
-          <input type="text" placeholder="Search units..." value={search} onChange={(e) => setSearch(e.target.value)} className="search-input" />
+          <div className="datasheet-browser-header" id="datasheet-list">
+            <span>LEX TACTICA IMPERIALIS</span>
+            <span>{Object.values(groupedUnits).reduce((count, units) => count + units.length, 0)} RECORDS</span>
+          </div>
+          <input type="text" placeholder="Search datasheets..." value={search} onChange={(e) => setSearch(e.target.value)} className="search-input" />
+          <div className="unit-category-filters" aria-label="Filter datasheets">
+            {[
+              { id: 'all', label: 'ALL' },
+              { id: 'character', label: 'CHARACTER' },
+              { id: 'battleline', label: 'BATTLELINE' },
+              { id: 'infantry', label: 'INFANTRY' },
+              { id: 'vehicle', label: 'VEHICLE' },
+            ].map(filter => (
+              <button
+                key={filter.id}
+                type="button"
+                className={`unit-category-filter${unitCategoryFilter === filter.id ? ' active' : ''}`}
+                aria-pressed={unitCategoryFilter === filter.id}
+                onClick={() => setUnitCategoryFilter(filter.id)}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
           {searchError && <p role="alert">{searchError}</p>}
           <div className="search-results">
             {Object.entries(groupedUnits).map(([groupName, units]) => {
               if (!units || units.length === 0) return null;
+              const normalizedGroup = groupName.toLowerCase();
+              const matchesFilter = unitCategoryFilter === 'all' ||
+                (unitCategoryFilter === 'character' && ['characters', 'epic heroes'].includes(normalizedGroup)) ||
+                (unitCategoryFilter === 'battleline' && normalizedGroup === 'battleline') ||
+                (unitCategoryFilter === 'infantry' && normalizedGroup === 'infantry') ||
+                (unitCategoryFilter === 'vehicle' && normalizedGroup === 'vehicles');
+              if (!matchesFilter) return null;
               return (
                 <div key={groupName} className="unit-group">
                   <div className="group-header" onClick={() => toggleGroup(groupName)}>
@@ -1008,14 +1095,51 @@ function RosterBuilder() {
           </div>
         </aside>
 
-        <main className="right-pane">
-          <div className="right-pane-header">
-            <h2>Current Roster</h2>
-            {roster.length > 0 && (
-              <div className={`validation-status ${validationError || violations.length > 0 ? 'invalid' : 'valid'}`}>
-                {validationError ? '⚠️ Validation unavailable' : violations.length === 0 ? '✅ List is Legal' : `❌ ${violations.length} Errors`}
+        <main className="right-pane" id="current-roster">
+          <section className="roster-command-overview" id="points-overview">
+            <div className="roster-overview-heading">
+              <div>
+                <span className="roster-overview-kicker">IMPERIAL ORDER OF BATTLE // STRIKE FORCE</span>
+                <h2>Active Muster Roster</h2>
+                <span className="roster-overview-subtitle">
+                  {selectedFaction.includes('|') ? selectedFaction.split('|')[1] : factions.find(f => f.id === selectedFaction)?.name}
+                  {selectedDetachment && ` · ${detachments.find(detachment => detachment.id === selectedDetachment)?.name || 'Detachment'}`}
+                </span>
               </div>
-            )}
+              {roster.length > 0 && (
+                <div className={`validation-status ${validationError || violations.length > 0 ? 'invalid' : 'valid'}`}>
+                  {validationError ? '⚠ VALIDATION UNAVAILABLE' : violations.length === 0 ? '✓ LEX VALIDATED' : `✕ ${violations.length} OMISSIONS`}
+                </div>
+              )}
+            </div>
+
+            <div className="roster-force-readout">
+              <span>FORCE QUOTA</span>
+              <strong>{totalPoints.toLocaleString()} <small>/ {pointsLimit.toLocaleString()} PTS</small></strong>
+              <div
+                className="roster-force-progress"
+                role="progressbar"
+                aria-label="Points limit used"
+                aria-valuemin={0}
+                aria-valuemax={pointsLimit}
+                aria-valuenow={Math.min(totalPoints, pointsLimit)}
+              >
+                <span style={{ width: `${rosterProgress}%` }} />
+              </div>
+              <span>{remainingPoints.toLocaleString()} PTS SURPLUS</span>
+            </div>
+
+            <div className="roster-metrics-grid">
+              <div className="roster-metric"><span>COMMAND</span><strong>{rosterCharacterCount} UNIT{rosterCharacterCount === 1 ? '' : 'S'}</strong></div>
+              <div className="roster-metric"><span>BATTLELINE CORE</span><strong>{rosterBattlelineCount} UNIT{rosterBattlelineCount === 1 ? '' : 'S'}</strong></div>
+              <div className="roster-metric"><span>ARMORED ASSETS</span><strong>{rosterVehicleCount} UNIT{rosterVehicleCount === 1 ? '' : 'S'}</strong></div>
+              <div className="roster-metric"><span>FORCE STRENGTH</span><strong>{rosterModelCount} MODEL{rosterModelCount === 1 ? '' : 'S'}</strong></div>
+            </div>
+          </section>
+
+          <div className="right-pane-header" id="validation-diagnostics">
+            <h2>Current Roster</h2>
+            <span className="roster-record-count">{roster.length} SELECTED RECORDS</span>
           </div>
 
           {validationError && <p role="alert">{validationError}</p>}
@@ -1038,12 +1162,29 @@ function RosterBuilder() {
                     <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
-                          <span style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>{unit.name}</span>
-                          <span className="item-size" style={{ marginLeft: '0.5rem' }}>({unit.size} models)</span>
+                          <span className="roster-unit-type">
+                            {unit.is_warlord
+                              ? 'SUPREME WARLORD // HIGH COMMAND'
+                              : unit.keywords.some(keyword => keyword.toUpperCase() === 'CHARACTER')
+                                ? 'CHARACTER // OFFICER'
+                                : unit.keywords.some(keyword => keyword.toUpperCase() === 'BATTLELINE')
+                                  ? 'BATTLELINE COHORT'
+                                  : unit.keywords.some(keyword => keyword.toUpperCase() === 'VEHICLE')
+                                    ? 'ARMORED ASSET'
+                                      : unit.keywords.some(keyword => keyword.toUpperCase() === 'MONSTER')
+                                        ? 'MONSTROUS ASSET'
+                                        : unit.keywords.some(keyword => keyword.toUpperCase() === 'MOUNTED')
+                                          ? 'MOUNTED AUXILIA'
+                                          : unit.keywords.some(keyword => keyword.toUpperCase() === 'AIRCRAFT')
+                                            ? 'AERIAL ASSET'
+                                            : 'FIELD FORMATION'}
+                          </span>
+                          <span className="roster-unit-name">{unit.name}</span>
+                          <span className="item-size">({unit.size} models)</span>
                           {unit.is_warlord && <span className="warlord-badge" style={{ marginLeft: '0.5rem' }}>WARLORD</span>}
                         </div>
                         <div className="item-actions">
-                          <span className="item-pts" style={{ marginRight: '1rem' }}>{unit.points} pts</span>
+                          <span className="item-pts">{unit.points} PTS</span>
                           {unit.keywords && unit.keywords.some(k => k.toUpperCase() === 'CHARACTER') && (
                             <button className="warlord-btn" onClick={(event) => { event.stopPropagation(); setWarlord(unit.instanceId); }}>👑</button>
                           )}
@@ -1086,7 +1227,7 @@ function RosterBuilder() {
                           character.keywords?.some(keyword => keyword.toUpperCase() === 'CHARACTER')
                         )
                         .map(character => (
-                          <div key={character.instanceId} style={{ marginTop: '0.35rem', color: '#b9a0ff', fontSize: '0.8rem' }}>
+                          <div key={character.instanceId} className="roster-led-indicator">
                             🛡️ Led by {character.name}
                           </div>
                         ))}
@@ -1095,8 +1236,8 @@ function RosterBuilder() {
                         <div style={{ marginTop: '0.5rem', paddingLeft: '0.5rem', borderLeft: '2px solid #444' }}>
                           {normalizeWargear(unit.wargear).map((w, wIdx) => (
                             <div key={wIdx} style={{ fontSize: '0.8rem', color: '#aaa', marginTop: '0.2rem' }}>
-                              <span style={{ color: '#00ffcc' }}>+</span>{' '}
-                              <span style={{ color: '#fff' }}>
+                              <span className="roster-wargear-marker">+</span>{' '}
+                              <span className="roster-wargear-name">
                                 {w.quantity > 1 ? `${w.quantity}x ` : ''}{w.name}
                               </span>
                               {w.replaced && w.replaced.length > 0 && (
@@ -1107,7 +1248,7 @@ function RosterBuilder() {
                         </div>
                       )}
                     {unit.enhancement && (
-                      <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: '#ffc107' }}>
+                      <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--border-gold)' }}>
                         ✨ {unit.enhancement.name}
                       </div>
                     )}
@@ -1180,7 +1321,7 @@ function RosterBuilder() {
                         <td>{w.stats?.S || '-'}</td>
                         <td>{w.stats?.AP || '-'}</td>
                         <td>{w.stats?.D || '-'}</td>
-                        <td style={{ fontSize: '0.75rem', color: '#8a2be2', maxWidth: '150px' }}>
+                        <td style={{ fontSize: '0.75rem', color: 'var(--accent-green-bright)', maxWidth: '150px' }}>
                           {w.keywords && w.keywords.length > 0 ? (
                             w.keywords.map((kw, idx) => (
                               <span
@@ -1223,7 +1364,7 @@ function RosterBuilder() {
                           <td>{w.stats?.S || '-'}</td>
                           <td>{w.stats?.AP || '-'}</td>
                           <td>{w.stats?.D || '-'}</td>
-                          <td style={{ fontSize: '0.75rem', color: '#8a2be2', maxWidth: '150px' }}>
+                          <td style={{ fontSize: '0.75rem', color: 'var(--accent-green-bright)', maxWidth: '150px' }}>
                             {w.keywords && w.keywords.length > 0 ? (
                               w.keywords.map((kw, idx) => (
                                 <span
@@ -1262,7 +1403,7 @@ function RosterBuilder() {
                 ) : (
                   <div className="dc-ability-grid">
                     {unitRulesText.map((ability, index) => (
-                      <div key={index} className="dc-ability-card" style={{ borderLeftColor: '#8a2be2', background: '#222' }}>
+                      <div key={index} className="dc-ability-card" style={{ borderLeftColor: 'var(--accent-green)', background: 'var(--surface-card)' }}>
                         <strong style={{ fontSize: '1rem', color: '#fff' }}>{ability.name}</strong>
                         <p style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', color: '#ccc', marginTop: '0.5rem', fontSize: '0.9rem' }}>
                           {ability.text}
@@ -1297,11 +1438,11 @@ function RosterBuilder() {
               {selectedUnitDetails.wargear_options && selectedUnitDetails.wargear_options.length > 0 && (
                 <div className="dc-abilities-section" style={{ marginTop: '1.5rem' }}>
                   <h3>WARGEAR OPTIONS</h3>
-                  <div style={{ background: '#1a1a1a', padding: '1rem', borderRadius: '4px', marginBottom: '1rem', border: '1px solid #333' }}>
+                  <div style={{ background: 'var(--surface-inset)', padding: '1rem', borderRadius: '0', marginBottom: '1rem', border: '1px solid var(--border-metal)' }}>
                     <strong style={{ color: '#fff', fontSize: '0.9rem', display: 'block', marginBottom: '0.5rem' }}>Current Loadout:</strong>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
                       {currentLoadout.map((weapon, index) => (
-                        <span key={index} style={{ background: '#333', color: '#ffc107', padding: '0.2rem 0.6rem', borderRadius: '4px', fontSize: '0.8rem' }}>
+                        <span key={index} style={{ background: 'var(--surface-raised)', color: 'var(--border-gold)', padding: '0.2rem 0.6rem', borderRadius: '0', fontSize: '0.8rem' }}>
                           {weapon}
                         </span>
                       ))}
@@ -1309,7 +1450,7 @@ function RosterBuilder() {
                   </div>
                   <div className="dc-ability-grid">
                     {selectedUnitDetails.wargear_options.map((opt, i) => (
-                      <div key={i} className="dc-ability-card" style={{ borderLeftColor: '#ffc107' }}>
+                      <div key={i} className="dc-ability-card" style={{ borderLeftColor: 'var(--border-gold)' }}>
                         <p style={{ margin: 0, color: '#ddd', fontSize: '0.9rem' }}>
                           Replace <strong>{opt.replaces.join(', ')}</strong> with:
                         </p>
@@ -1385,14 +1526,14 @@ function RosterBuilder() {
                !selectedUnitDetails.keywords.some(k => k.toUpperCase() === 'EPIC HERO') && (
                 <>
                   <div className="dc-size-picker">
-                    <label style={{ color: '#ffc107' }}>ENHANCEMENT</label>
+                    <label style={{ color: 'var(--border-gold)' }}>ENHANCEMENT</label>
                     <select
                       value={selectedEnhancement ? selectedEnhancement.id : ""}
                       onChange={(e) => {
                         const enh = selectedUnitDetails.available_enhancements.find(x => x.id === e.target.value);
                         setSelectedEnhancement(enh || null);
                       }}
-                      style={{ borderColor: selectedEnhancement ? '#ffc107' : '#444' }}
+                      style={{ borderColor: selectedEnhancement ? 'var(--border-gold)' : 'var(--border-metal)' }}
                     >
                       <option value="">None (0 pts)</option>
                       {selectedUnitDetails.available_enhancements
@@ -1403,7 +1544,7 @@ function RosterBuilder() {
                     </select>
                   </div>
                   {selectedEnhancement && (
-                    <div style={{ width: '100%', background: '#1e1e1e', padding: '1rem', borderRadius: '4px', borderLeft: '3px solid #ffc107', marginTop: '1rem' }}>
+                    <div style={{ width: '100%', background: 'var(--surface-card)', padding: '1rem', borderRadius: '0', borderLeft: '3px solid var(--border-gold)', marginTop: '1rem' }}>
                         <RulesText
                           type="enhancement"
                           name={selectedEnhancement.name}
@@ -1445,7 +1586,7 @@ function RosterBuilder() {
                   <div className="dc-abilities-section">
                     <h3>DETACHMENT RULES</h3>
                     {detachmentDetails.rules?.map((r, i) => (
-                      <div key={i} className="dc-ability-card" style={{ borderLeftColor: '#8a2be2' }}>
+                      <div key={i} className="dc-ability-card" style={{ borderLeftColor: 'var(--accent-green)' }}>
                         <strong>{r.name}</strong>
                         <p style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', color: '#ccc', marginTop: '0.5rem' }}>
                           {cleanMarkdown(r.description ?? '')}
@@ -1457,7 +1598,7 @@ function RosterBuilder() {
                   <div className="dc-abilities-section" style={{ marginTop: '1.5rem' }}>
                     <h3>ENHANCEMENTS</h3>
                     {detachmentDetails.enhancements?.map((e, i) => (
-                      <div key={i} className="dc-ability-card" style={{ borderLeftColor: '#ffc107' }}>
+                      <div key={i} className="dc-ability-card" style={{ borderLeftColor: 'var(--border-gold)' }}>
                         <strong>{e.name} ({e.cost} pts)</strong>
                         <p style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', color: '#ccc', marginTop: '0.5rem' }}>
                           {cleanMarkdown(e.description ?? '')}
@@ -1490,7 +1631,7 @@ function RosterBuilder() {
             style={{ maxWidth: '400px', padding: '2rem' }}
             onClick={event => event.stopPropagation()}
           >
-            <h2 style={{ color: '#8a2be2', marginBottom: '1rem' }}>{keywordPopup.name}</h2>
+            <h2 style={{ color: 'var(--border-gold)', marginBottom: '1rem' }}>{keywordPopup.name}</h2>
             <p style={{ lineHeight: '1.6', color: '#ddd' }}>{keywordPopup.text}</p>
             <button
               onClick={() => setKeywordPopup(null)}
