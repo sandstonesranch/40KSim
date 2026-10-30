@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "40Ksim: start backend",
+      "type": "shell",
+      "command": "./dev.sh backend",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "panel": "dedicated", "group": "40ksim" }
+    },
+    {
+      "label": "40Ksim: start frontend",
+      "type": "shell",
+      "command": "./dev.sh frontend",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "panel": "dedicated", "group": "40ksim" }
+    },
+    {
+      "label": "40Ksim: start all",
+      "dependsOn": ["40Ksim: start backend", "40Ksim: start frontend"],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "40Ksim: run tests",
+      "type": "shell",
+      "command": "./dev.sh test",
+      "problemMatcher": [],
+      "group": "test"
+    }
+  ]
+}
