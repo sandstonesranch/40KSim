@@ -10,3 +10,5 @@ __pycache__/
 
 # Ignore databases and local data
 data-schema/factions/
+
+.env

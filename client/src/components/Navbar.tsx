@@ -2,20 +2,20 @@ import { Link, useLocation } from 'react-router-dom';
 
 export default function Navbar() {
   const location = useLocation();
-  const isActive = (path: string) => location.pathname === path ? { color: '#8a2be2', fontWeight: 'bold' } : { color: '#aaa' };
 
   return (
-    <nav style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 2rem', backgroundColor: '#1a1a1a', borderBottom: '1px solid #333' }}>
-      <Link to="/" style={{ textDecoration: 'none' }}>
-        <h2 style={{ margin: 0, color: '#fff', fontSize: '1.2rem' }}>Warscribe 40K</h2>
+    <nav className="main-navigation" aria-label="Main navigation">
+      <Link to="/" className="navigation-brand">
+        <span className="navigation-brand-mark" aria-hidden="true">⚙</span>
+        <span>Warscribe 40K</span>
       </Link>
 
-      <div style={{ display: 'flex', gap: '2rem', fontSize: '1rem' }}>
-        <Link to="/" style={{ ...isActive('/'), textDecoration: 'none' }}>Home</Link>
-        <Link to="/roster" style={{ ...isActive('/roster'), textDecoration: 'none' }}>Roster Builder</Link>
-        <Link to="/codex" style={{ ...isActive('/codex'), textDecoration: 'none' }}>Codex</Link>
-        <Link to="/game" style={{ ...isActive('/game'), textDecoration: 'none' }}>Simulator</Link>
-        <Link to="/profile" style={{ ...isActive('/profile'), textDecoration: 'none' }}>Profile</Link>
+      <div className="navigation-links">
+        <Link to="/" className={`navigation-link${location.pathname === '/' ? ' active' : ''}`} aria-current={location.pathname === '/' ? 'page' : undefined}>Home</Link>
+        <Link to="/roster" className={`navigation-link${location.pathname === '/roster' ? ' active' : ''}`} aria-current={location.pathname === '/roster' ? 'page' : undefined}>Roster Builder</Link>
+        <Link to="/codex" className={`navigation-link${location.pathname === '/codex' ? ' active' : ''}`} aria-current={location.pathname === '/codex' ? 'page' : undefined}>Codex</Link>
+        <Link to="/game" className={`navigation-link${location.pathname === '/game' ? ' active' : ''}`} aria-current={location.pathname === '/game' ? 'page' : undefined}>Simulator</Link>
+        <Link to="/profile" className={`navigation-link${location.pathname === '/profile' ? ' active' : ''}`} aria-current={location.pathname === '/profile' ? 'page' : undefined}>Profile</Link>
       </div>
     </nav>
   );

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "stitch::code-to-design": {
+      "source": "google-labs-code/stitch-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/stitch-design/skills/code-to-design/SKILL.md",
+      "computedHash": "712f46377fc87da5836bf230acd607923ad598791c609766b58dd9b8db00eef7"
+    }
+  }
+}

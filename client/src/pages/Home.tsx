@@ -2,34 +2,41 @@ import { Link } from 'react-router-dom';
 
 export default function Home() {
   return (
-    <div style={{ padding: '4rem', textAlign: 'center', color: 'white' }}>
-      <h1 style={{ fontSize: '3rem', marginBottom: '1rem', color: '#8a2be2' }}>Warscribe 40K</h1>
-      <p style={{ fontSize: '1.2rem', marginBottom: '3rem', color: '#aaa' }}>
+    <main className="home-screen">
+      <p className="home-eyebrow">ADEPTUS MECHANICUS // COGITATOR ACCESS</p>
+      <h1 className="home-title">Warscribe 40K</h1>
+      <p className="home-intro">
         The ultimate open-source Warhammer 40k companion.
       </p>
 
-      <div style={{ display: 'flex', gap: '2rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-        <Link to="/roster" style={{ textDecoration: 'none' }}>
-          <div style={{ backgroundColor: '#2a2a2a', padding: '3rem', borderRadius: '8px', border: '1px solid #444', width: '250px', transition: 'transform 0.2s' }}>
-            <h2 style={{ color: '#fff', marginBottom: '1rem' }}>🛡️ Roster Builder</h2>
-            <p style={{ color: '#888' }}>Create and validate your army lists.</p>
-          </div>
+      <div className="home-module-grid">
+        <Link to="/roster" className="home-module-link">
+          <section className="home-module-card">
+            <span className="home-module-code">01 // COMMAND</span>
+            <h2>Roster Builder</h2>
+            <p>Create and validate your army lists.</p>
+            <span className="home-module-action">INITIALIZE MODULE →</span>
+          </section>
         </Link>
 
-        <Link to="/codex" style={{ textDecoration: 'none' }}>
-          <div style={{ backgroundColor: '#2a2a2a', padding: '3rem', borderRadius: '8px', border: '1px solid #444', width: '250px', transition: 'transform 0.2s' }}>
-            <h2 style={{ color: '#fff', marginBottom: '1rem' }}>📖 Codex</h2>
-            <p style={{ color: '#888' }}>Read full rules and stratagems.</p>
-          </div>
+        <Link to="/codex" className="home-module-link">
+          <section className="home-module-card">
+            <span className="home-module-code">02 // ARCHIVES</span>
+            <h2>Codex</h2>
+            <p>Read full rules and stratagems.</p>
+            <span className="home-module-action">ACCESS ARCHIVES →</span>
+          </section>
         </Link>
 
-        <Link to="/game" style={{ textDecoration: 'none' }}>
-          <div style={{ backgroundColor: '#2a2a2a', padding: '3rem', borderRadius: '8px', border: '1px solid #444', width: '250px', transition: 'transform 0.2s' }}>
-            <h2 style={{ color: '#fff', marginBottom: '1rem' }}>⚔️ Game Simulator</h2>
-            <p style={{ color: '#888' }}>Play out battles on a virtual tabletop.</p>
-          </div>
+        <Link to="/game" className="home-module-link">
+          <section className="home-module-card">
+            <span className="home-module-code">03 // BATTLEFIELD</span>
+            <h2>Game Simulator</h2>
+            <p>Play out battles on a virtual tabletop.</p>
+            <span className="home-module-action">ENTER SIMULATOR →</span>
+          </section>
         </Link>
       </div>
-    </div>
+    </main>
   );
 }
