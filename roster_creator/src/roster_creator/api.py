@@ -37,6 +37,36 @@ SUBFACTION_FACTION_IDS = {
     "Black Templars": "black-templars",
 }
 
+ASTARTES_CHAPTER_FACTION_IDS = {
+    "black-templars",
+    "blood-angels",
+    "crimson-fists",
+    "dark-angels",
+    "deathwatch",
+    "imperial-fists",
+    "iron-hands",
+    "raven-guard",
+    "salamanders",
+    "space-wolves",
+    "ultramarines",
+    "white-scars",
+}
+
+ASTARTES_CHAPTER_KEYWORDS = {
+    "black templars",
+    "blood angels",
+    "crimson fists",
+    "dark angels",
+    "deathwatch",
+    "imperial fists",
+    "iron hands",
+    "raven guard",
+    "salamanders",
+    "space wolves",
+    "ultramarines",
+    "white scars",
+}
+
 MCP_FACTION_ALIASES = {
     "adeptus-astartes": "space-marines",
     "agents-of-the-imperium": "imperial-agents",
@@ -311,8 +341,16 @@ def read_root():
 @app.get("/api/factions")
 def get_factions():
     faction_list = []
+    chapter_names = {
+        faction.id: faction.name
+        for faction in ds.factions
+        if faction.id in ASTARTES_CHAPTER_FACTION_IDS
+    }
 
     for faction in ds.factions:
+        if faction.id in ASTARTES_CHAPTER_FACTION_IDS:
+            continue
+
         subfactions = set()
         faction_units = [unit for unit in ds.units if unit.faction_id == faction.id]
 
@@ -321,6 +359,9 @@ def get_factions():
                 if keyword.upper() != faction.name.upper() and len(keyword) > 2:
                     if keyword.upper() not in ["IMPERIUM", "CHAOS", "XENOS", "AELDARI"]:
                         subfactions.add(keyword)
+
+        if faction.id == "adeptus-astartes":
+            subfactions.update(chapter_names.values())
 
         faction_list.append({
             "id": faction.id,
@@ -437,30 +478,78 @@ def search_units(q: str = "", faction_id: str = "", limit: int = Query(500, ge=1
     if faction_id:
         if "|" in faction_id:
             main_id, sub_name = faction_id.split("|", 1)
-            results = [
-                u for u in results
-                if u.faction_id == main_id
-                and any(sub_name.lower() == keyword.lower() for keyword in u.faction_keywords)
-            ]
+            if main_id == "adeptus-astartes":
+                selected_chapter = sub_name.casefold()
+                results = [
+                    unit
+                    for unit in results
+                    if unit.faction_id == main_id
+                    and (
+                        selected_chapter in {
+                            keyword.casefold() for keyword in unit.faction_keywords
+                        }
+                        or not (
+                            {
+                                keyword.casefold() for keyword in unit.faction_keywords
+                            } & ASTARTES_CHAPTER_KEYWORDS
+                        )
+                    )
+                ]
+            else:
+                results = [
+                    unit for unit in results
+                    if unit.faction_id == main_id
+                    and any(sub_name.casefold() == keyword.casefold() for keyword in unit.faction_keywords)
+                ]
         else:
             results = [u for u in results if u.faction_id == faction_id]
     if q:
         results = [u for u in results if q.lower() in u.name.lower()]
     results = results[:limit]
 
-    grouped = {"Epic Heroes": [], "Characters": [], "Battleline": [], "Dedicated Transports": [], "Fortifications": [], "Allied Units": [], "Other Units": []}
+    grouped = {
+        "Epic Heroes": [],
+        "Characters": [],
+        "Battleline": [],
+        "Dedicated Transports": [],
+        "Allied Units": [],
+        "Vehicles": [],
+        "Monsters": [],
+        "Infantry": [],
+        "Mounted": [],
+        "Aircraft": [],
+        "Fortifications": [],
+    }
 
     for u in results:
         unit_data = {"id": u.id, "name": u.name, "points": u.points[0]["cost"] if u.points else 0}
         role = getattr(u, 'role', None)
+        keywords = {keyword.upper() for keyword in u.keywords}
 
-        if role == "epic-hero": grouped["Epic Heroes"].append(unit_data)
-        elif role == "character": grouped["Characters"].append(unit_data)
-        elif role == "battleline": grouped["Battleline"].append(unit_data)
-        elif role == "dedicated-transport": grouped["Dedicated Transports"].append(unit_data)
-        elif role == "fortification": grouped["Fortifications"].append(unit_data)
-        elif role == "allied": grouped["Allied Units"].append(unit_data)
-        else: grouped["Other Units"].append(unit_data)
+        if role == "epic-hero":
+            group = "Epic Heroes"
+        elif role == "character":
+            group = "Characters"
+        elif role == "battleline":
+            group = "Battleline"
+        elif role == "dedicated-transport":
+            group = "Dedicated Transports"
+        elif role == "allied":
+            group = "Allied Units"
+        elif "VEHICLE" in keywords:
+            group = "Vehicles"
+        elif "MONSTER" in keywords:
+            group = "Monsters"
+        elif "MOUNTED" in keywords:
+            group = "Mounted"
+        elif "AIRCRAFT" in keywords:
+            group = "Aircraft"
+        elif "INFANTRY" in keywords:
+            group = "Infantry"
+        else:
+            group = "Fortifications"
+
+        grouped[group].append(unit_data)
 
     return grouped
 

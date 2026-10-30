@@ -161,7 +161,13 @@ function RosterBuilder() {
   const [search, setSearch] = useState("");
   const [groupedUnits, setGroupedUnits] = useState<GroupedUnits>({});
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [openGroups, setOpenGroups] = useState<{ [key: string]: boolean }>({ Characters: true, Battleline: true, "Other Units": true });
+  const [openGroups, setOpenGroups] = useState<{ [key: string]: boolean }>({
+    Characters: true,
+    Battleline: true,
+    Vehicles: true,
+    Monsters: true,
+    Infantry: true,
+  });
 
   const [roster, setRoster] = useState<RosterItem[]>(
     savedData.roster || []
@@ -172,6 +178,7 @@ function RosterBuilder() {
 
   const [selectedUnitDetails, setSelectedUnitDetails] = useState<UnitDetails | null>(null);
   const [unitDetailsError, setUnitDetailsError] = useState<string | null>(null);
+  const [canLeadUnits, setCanLeadUnits] = useState<string[]>([]);
   const [legalBodyguardIds, setLegalBodyguardIds] = useState<Record<string, string[]>>({});
   const [leaderAttachmentErrors, setLeaderAttachmentErrors] = useState<Record<string, string>>({});
   const [unitRulesText, setUnitRulesText] = useState<{ name: string; text: string }[]>([]);
@@ -369,6 +376,7 @@ function RosterBuilder() {
   const openUnitModal = (unitId: string, instanceId: string | null = null) => {
     setUnitDetailsError(null);
     setSelectedUnitDetails(null);
+    setCanLeadUnits([]);
     fetch(`http://127.0.0.1:8000/api/units/${encodeURIComponent(unitId)}?detachment_id=${encodeURIComponent(selectedDetachment)}`)
       .then(async res => {
         if (!res.ok) {
@@ -384,6 +392,41 @@ function RosterBuilder() {
       .then(data => {
         setSelectedUnitDetails(data);
         setEditingUnitId(instanceId);
+
+        if (data.keywords.some(
+          keyword => typeof keyword === 'string' && keyword.toUpperCase() === 'CHARACTER'
+        )) {
+          fetch(`http://127.0.0.1:8000/api/legal-bodyguards/${encodeURIComponent(unitId)}`)
+            .then(async response => {
+              if (!response.ok) {
+                throw new Error(`Legal bodyguard lookup failed with status ${response.status}`);
+              }
+              const bodyguardIds: unknown = await response.json();
+              if (!Array.isArray(bodyguardIds) || !bodyguardIds.every(id => typeof id === 'string')) {
+                throw new Error('Legal bodyguard lookup returned an invalid response.');
+              }
+              return Promise.all(bodyguardIds.map(async id => {
+                const bodyguardResponse = await fetch(
+                  `http://127.0.0.1:8000/api/units/${encodeURIComponent(id)}`
+                );
+                if (!bodyguardResponse.ok) {
+                  throw new Error(`Bodyguard unit lookup failed with status ${bodyguardResponse.status}`);
+                }
+                const bodyguard: unknown = await bodyguardResponse.json();
+                if (!isRecord(bodyguard) || typeof bodyguard.name !== 'string') {
+                  throw new Error('Bodyguard unit lookup returned an invalid response.');
+                }
+                return bodyguard.name;
+              }));
+            })
+            .then(setCanLeadUnits)
+            .catch(error => {
+              console.error('Failed to load legal attachment options', error);
+              setCanLeadUnits([]);
+            });
+        } else {
+          setCanLeadUnits([]);
+        }
 
         setUnitRulesText([]);
         fetch(`http://127.0.0.1:8000/api/codex/unit/${encodeURIComponent(data.name)}`)
@@ -1229,6 +1272,27 @@ function RosterBuilder() {
                   </div>
                 )}
               </div>
+
+              {canLeadUnits.length > 0 && (
+                <div className="dc-abilities-section" style={{ marginTop: '1.5rem' }}>
+                  <h3>CAN LEAD (ATTACHMENTS)</h3>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    {canLeadUnits.map(unitName => (
+                      <span
+                        key={unitName}
+                        style={{
+                          background: '#333',
+                          color: '#ddd',
+                          padding: '0.25rem 0.6rem',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        {unitName}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {selectedUnitDetails.wargear_options && selectedUnitDetails.wargear_options.length > 0 && (
                 <div className="dc-abilities-section" style={{ marginTop: '1.5rem' }}>
