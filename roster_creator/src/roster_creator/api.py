@@ -12,7 +12,17 @@ from wh40kdc import Dataset
 from .mathhammer import Context, Target, expected_damage, profile_from_dataset
 from .validator import Roster, RosterEntry, validate
 from .ai.advisor import get_suggestions
-from .mcp_client import MCP_SERVER_DIR, call_mcp_tool
+from .mcp_client import MCP_SERVER_DIR, call_mcp_tool, list_mcp_tools
+from .enhancements import (
+    base_name,
+    describe_local,
+    detachment_enhancements,
+    enhancement_view,
+    format_mcp_enhancement,
+    mcp_entries_for,
+    mcp_text_index,
+    near_misses,
+)
 
 
 GENERIC_ASTARTES_DETACHMENTS = [
@@ -200,6 +210,105 @@ async def call_40k_tool(tool_name: str, arguments: dict) -> str:
 
 def normalize_rule_name(name: str) -> str:
     return name.casefold().replace("’", "'").strip()
+
+
+def safe_load_mcp_faction_file(faction_id: str, filename: str, warnings: list[str]) -> list[dict]:
+    """Like load_mcp_faction_file, but a missing/broken MCP file becomes a warning."""
+    try:
+        return load_mcp_faction_file(faction_id, filename)
+    except HTTPException as error:
+        warnings.append(f"40k MCP {filename} for '{faction_id}': {error.detail}")
+        return []
+
+
+def find_detachment(value: str) -> Optional[dict]:
+    """Detachment by dataset id or (case-insensitive) name."""
+    if not value:
+        return None
+    by_id = next((d for d in ds.detachments if d.get("id") == value), None)
+    if by_id:
+        return by_id
+    wanted = normalize_rule_name(value)
+    return next((d for d in ds.detachments if normalize_rule_name(d.get("name", "")) == wanted), None)
+
+
+def build_detachment_enhancements(detachment: dict, faction_id: str, warnings: list[str]) -> list[dict]:
+    """Enhancements for a detachment: wh40kdc is authoritative, MCP only adds text."""
+    detachment_name = detachment.get("name", "")
+    mcp_all = safe_load_mcp_faction_file(faction_id, "enhancements.json", warnings)
+    mcp_matches = mcp_entries_for(mcp_all, detachment_name)
+    text_index = mcp_text_index(mcp_matches)
+    local = detachment_enhancements(ds, detachment)
+
+    views = []
+    for enhancement in local:
+        match = text_index.get(base_name(enhancement.get("name", "")))
+        views.append(enhancement_view(
+            enhancement,
+            description=((match or {}).get("effect") or "").strip(),
+            source="wh40kdc+mcp" if match else "wh40kdc",
+        ))
+
+    if not local:
+        # Dataset has none for this detachment: fall back to whatever MCP lists.
+        for item in mcp_matches:
+            cost = item.get("pointsCost")
+            views.append({
+                "id": base_name(item.get("name", "")).replace(" ", "-"),
+                "name": item.get("name", "Enhancement"),
+                "cost": cost if isinstance(cost, int) else 0,
+                "upgrade": False,
+                "max_targets": 1,
+                "keyword_restrictions": [],
+                "points_provisional": False,
+                "description": (item.get("effect") or "").strip(),
+                "description_available": bool((item.get("effect") or "").strip()),
+                "source": "mcp",
+            })
+
+    # Diagnostics: remove once the MCP data is known to be in step with the dataset.
+    print(
+        f"[enhancements] {detachment.get('id')} faction={faction_id} "
+        f"local={len(local)} mcp_file_entries={len(mcp_all)} "
+        f"mcp_for_detachment={len(mcp_matches)} "
+        f"with_text={sum(1 for v in views if v['description_available'])}",
+        flush=True,
+    )
+    if mcp_matches:
+        print(f"[enhancements]   mcp_results={json.dumps(mcp_matches, ensure_ascii=False)[:600]}", flush=True)
+    elif mcp_all:
+        names = {item.get("detachment", "") for item in mcp_all}
+        print(
+            f"[enhancements]   MCP has no enhancements for detachment {detachment_name!r}; "
+            f"nearest MCP detachment names: {near_misses(detachment_name, names)}",
+            flush=True,
+        )
+    return views
+
+
+def enhancement_rule_text(name: str, faction: str = "", detachment: str = "") -> str:
+    """Readable rules text for one enhancement, never raw JSON and never empty."""
+    warnings: list[str] = []
+    faction_id = mcp_faction_id(faction)
+    detachment_record = find_detachment(detachment)
+    detachment_name = detachment_record.get("name", "") if detachment_record else detachment
+    wanted = base_name(name)
+
+    entries = safe_load_mcp_faction_file(faction_id, "enhancements.json", warnings)
+    if detachment_name:
+        entries = mcp_entries_for(entries, detachment_name) or entries
+    exact = [item for item in entries if base_name(item.get("name", "")) == wanted]
+    loose = [item for item in entries if wanted and wanted in base_name(item.get("name", ""))]
+    matches = exact or loose
+    if matches:
+        return "\n\n".join(format_mcp_enhancement(item) for item in matches)
+
+    pool = detachment_enhancements(ds, detachment_record) if detachment_record else list(ds.enhancements)
+    local = next((e for e in pool if base_name(e.get("name", "")) == wanted), None)
+    if local is not None:
+        return describe_local(local)
+    suffix = f" ({'; '.join(warnings)})" if warnings else ""
+    return f"No rules text found for {name}.{suffix}"
 
 
 def parse_abilities_text(abilities_text: str) -> list[dict[str, str]]:
@@ -424,12 +533,13 @@ async def get_detachment_details(detachment_id: str):
     if not detachment:
         raise HTTPException(status_code=404, detail="Detachment not found")
 
+    warnings: list[str] = []
     faction_id = mcp_faction_id(detachment.get("faction_id", ""))
     detachment_name = detachment.get("name", "")
     mcp_detachment = next(
         (
             item
-            for item in load_mcp_faction_file(faction_id, "detachments.json")
+            for item in safe_load_mcp_faction_file(faction_id, "detachments.json", warnings)
             if normalize_rule_name(item.get("name", ""))
             == normalize_rule_name(detachment_name)
         ),
@@ -442,24 +552,18 @@ async def get_detachment_details(detachment_id: str):
             "Please check the official supplement."
         )
 
-    stratagem_text = await call_40k_tool(
-        "list_stratagems",
-        {
-            "faction": faction_id,
-            "detachment": detachment_name.replace("’", "'"),
-        },
-    )
-    stratagems = parse_mcp_stratagems(stratagem_text)
-    enhancements = [
-        {
-            "name": enhancement.get("name", "Enhancement"),
-            "cost": enhancement.get("pointsCost", "?"),
-            "description": enhancement.get("effect", ""),
-        }
-        for enhancement in load_mcp_faction_file(faction_id, "enhancements.json")
-        if normalize_rule_name(enhancement.get("detachment", ""))
-        == normalize_rule_name(detachment_name)
-    ]
+    try:
+        stratagem_text = await call_40k_tool(
+            "list_stratagems",
+            {
+                "faction": faction_id,
+                "detachment": detachment_name.replace("’", "'"),
+            },
+        )
+        stratagems = parse_mcp_stratagems(stratagem_text)
+    except HTTPException as error:
+        warnings.append(f"Stratagems unavailable: {error.detail}")
+        stratagems = []
 
     return {
         "id": detachment.get("id"),
@@ -469,7 +573,39 @@ async def get_detachment_details(detachment_id: str):
             "description": rule_text,
         }],
         "stratagems": stratagems,
-        "enhancements": enhancements,
+        "enhancements": build_detachment_enhancements(detachment, faction_id, warnings),
+        "detachment_points": detachment.get("detachment_points"),
+        "warnings": warnings,
+    }
+
+
+@app.get("/api/debug/enhancements/{detachment_id}")
+async def debug_enhancements(detachment_id: str):
+    """Where do a detachment's enhancements come from? Local-dev diagnostic."""
+    detachment = find_detachment(detachment_id)
+    if not detachment:
+        raise HTTPException(status_code=404, detail="Detachment not found")
+    faction_id = mcp_faction_id(detachment.get("faction_id", ""))
+    warnings: list[str] = []
+    mcp_all = safe_load_mcp_faction_file(faction_id, "enhancements.json", warnings)
+    matches = mcp_entries_for(mcp_all, detachment.get("name", ""))
+    mcp_names = {item.get("detachment", "") for item in mcp_all}
+    return {
+        "detachment": {k: detachment.get(k) for k in ("id", "name", "faction_id", "detachment_points")},
+        "mcp_server_dir": str(MCP_SERVER_DIR),
+        "mcp_server_dir_exists": MCP_SERVER_DIR.exists(),
+        "mcp_faction_id": faction_id,
+        "mcp_enhancements_file": str(MCP_SERVER_DIR / "data" / faction_id / "enhancements.json"),
+        "mcp_file_entries": len(mcp_all),
+        "mcp_detachment_names": sorted(n for n in mcp_names if n),
+        "mcp_matches_for_detachment": matches,
+        "nearest_mcp_detachment_names": near_misses(detachment.get("name", ""), mcp_names),
+        "local_enhancements": [
+            {k: e.get(k) for k in ("id", "name", "cost", "upgrade_tag", "max_targets", "keyword_restrictions")}
+            for e in detachment_enhancements(ds, detachment)
+        ],
+        "mcp_tools": await list_mcp_tools(),
+        "warnings": warnings,
     }
 
 @app.get("/api/search")
@@ -656,40 +792,12 @@ def get_unit_details(unit_id: str, detachment_id: str = ""):
             (d for d in ds.detachments if d.get('id') == detachment_id),
             None
         )
-        if detachment:
-            for enhancement_id in detachment.get('enhancement_ids', []):
-                enhancement = ds.enhancements.find(enhancement_id)
-                if enhancement:
-                    ability_id = (
-                        enhancement.get('ability_id')
-                        if isinstance(enhancement, dict)
-                        else getattr(enhancement, 'ability_id', None)
-                    )
-                    ability = ds.abilities.find(ability_id) if ability_id else None
-                    available_enhancements.append({
-                        "id": (
-                            enhancement.get('id')
-                            if isinstance(enhancement, dict)
-                            else getattr(enhancement, 'id', enhancement_id)
-                        ),
-                        "name": (
-                            enhancement.get('name', enhancement_id)
-                            if isinstance(enhancement, dict)
-                            else getattr(enhancement, 'name', enhancement_id)
-                        ),
-                        "cost": (
-                            enhancement.get('cost', "?")
-                            if isinstance(enhancement, dict)
-                            else getattr(enhancement, 'cost', "?")
-                        ),
-                        "description": (
-                            ability.get('text', "Structured mechanics available.")
-                            if isinstance(ability, dict)
-                            else getattr(ability, 'text', "Structured mechanics available.")
-                            if ability
-                            else "Structured mechanics available."
-                        )
-                    })
+        # `eligible` already accounts for Character vs Upgrade, Epic Hero and
+        # keyword restrictions, so the client needs no rules of its own.
+        available_enhancements = [
+            enhancement_view(enhancement, unit=unit)
+            for enhancement in detachment_enhancements(ds, detachment)
+        ]
 
     # Build exactly the squad sizes allowed by the rules
     points_options = []
@@ -788,14 +896,7 @@ async def get_codex_unit(unit_name: str, faction: str = ""):
 
 @app.get("/api/codex/enhancement/{enhancement_name}")
 async def get_codex_enhancement(enhancement_name: str, faction: str = ""):
-    faction_id = mcp_faction_id(faction)
-    matches = [
-        enhancement
-        for enhancement in load_mcp_faction_file(faction_id, "enhancements.json")
-        if normalize_rule_name(enhancement.get("name", ""))
-        == normalize_rule_name(enhancement_name)
-    ]
-    return {"id": enhancement_name, "text": json.dumps(matches, ensure_ascii=False)}
+    return {"id": enhancement_name, "text": enhancement_rule_text(enhancement_name, faction)}
 
 @app.get("/api/codex/stratagem/{stratagem_name}")
 async def get_codex_stratagem(stratagem_name: str, faction: str = ""):
@@ -823,18 +924,7 @@ async def get_codex_rule(type: str, name: str, faction: str = "", detachment: st
         )
         text = result
     elif type == "enhancement":
-        faction_id = mcp_faction_id(faction)
-        results = [
-            item
-            for item in load_mcp_faction_file(faction_id, "enhancements.json")
-            if name.casefold() in item.get("name", "").casefold()
-            and (
-                not detachment
-                or normalize_rule_name(item.get("detachment", ""))
-                == normalize_rule_name(detachment)
-            )
-        ]
-        text = json.dumps(results, ensure_ascii=False)
+        text = enhancement_rule_text(name, faction, detachment)
     elif type == "ability":
         unit = find_unit_by_name(name, faction)
         if not unit:
