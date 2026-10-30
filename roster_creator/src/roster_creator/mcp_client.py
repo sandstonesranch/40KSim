@@ -56,3 +56,15 @@ async def call_mcp_tool(tool_name: str, arguments: dict) -> str:
     if "error" in results:
         return results["error"]
     return results["result"]
+
+
+async def list_mcp_tools() -> list[str]:
+    """Names of the tools the 40k MCP server exposes (for diagnostics)."""
+    try:
+        async with stdio_client(server_parameters()) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                listing = await session.list_tools()
+                return sorted(tool.name for tool in listing.tools)
+    except Exception as error:
+        return [f"40k MCP connection failed: {error}"]

@@ -7,7 +7,15 @@ type Detachment = { id: string; name: string };
 type UnitAbility = { name: string; text: string };
 type UnitRules = { name: string; abilities: UnitAbility[] };
 type DetachmentRule = { name: string; description: string };
-type Enhancement = { name: string; cost: number | string; description: string };
+type Enhancement = {
+  name: string;
+  cost: number | string;
+  description: string;
+  description_available?: boolean;
+  upgrade?: boolean;
+  max_targets?: number;
+  keyword_restrictions?: string[];
+};
 type Stratagem = { name: string; cp_cost: number | string; description: string };
 type DetachmentRules = {
   id: string;
@@ -15,6 +23,7 @@ type DetachmentRules = {
   rules: DetachmentRule[];
   enhancements: Enhancement[];
   stratagems: Stratagem[];
+  warnings?: string[];
   error?: string;
 };
 type Tab = 'units' | 'detachments' | 'stratagems' | 'enhancements';
@@ -36,6 +45,24 @@ const cleanMarkdown = (text: string | undefined | null) => {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 };
+
+const enhancementMeta = (item: Enhancement): string => {
+  const parts: string[] = [];
+  if (item.upgrade) {
+    parts.push(`Upgrade: up to ${item.max_targets ?? 3} non-Character units, one enhancement slot`);
+  }
+  if (item.keyword_restrictions && item.keyword_restrictions.length > 0) {
+    parts.push(`Requires: ${item.keyword_restrictions.join(' + ')}`);
+  }
+  return parts.join(' · ');
+};
+
+const enhancementCard = (item: Enhancement): RuleItem => ({
+  name: `${item.name} · ${item.cost} pts`,
+  description: item.description,
+  meta: enhancementMeta(item),
+  unavailable: item.description_available === false,
+});
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -379,6 +406,7 @@ function DetachmentSection({
           </div>
         ) : content === 'all' ? (
           <>
+            <RuleWarnings warnings={selectedRules.warnings} />
             <div className="codex-detail-heading">
               <span className="codex-eyebrow">DETACHMENT</span>
               <h2>{selectedRules.name}</h2>
@@ -387,38 +415,52 @@ function DetachmentSection({
               name: rule.name,
               description: rule.description,
             }))} />
-            <RuleCards title="Enhancements" items={selectedRules.enhancements.map(item => ({
-              name: `${item.name} · ${item.cost} pts`,
-              description: item.description,
-            }))} />
+            <RuleCards title="Enhancements" items={selectedRules.enhancements.map(enhancementCard)} />
             <RuleCards title="Stratagems" items={selectedRules.stratagems.map(item => ({
               name: `${item.name} · ${item.cp_cost} CP`,
               description: item.description,
             }))} />
           </>
         ) : content === 'stratagems' ? (
-          <RuleCards
+          <>
+            <RuleWarnings warnings={selectedRules.warnings} />
+            <RuleCards
             title={`${selectedRules.name} · Stratagems`}
             items={selectedRules.stratagems.map(item => ({
               name: `${item.name} · ${item.cp_cost} CP`,
               description: item.description,
             }))}
           />
+          </>
         ) : (
+          <>
+          <RuleWarnings warnings={selectedRules.warnings} />
           <RuleCards
             title={`${selectedRules.name} · Enhancements`}
-            items={selectedRules.enhancements.map(item => ({
-              name: `${item.name} · ${item.cost} pts`,
-              description: item.description,
-            }))}
+            items={selectedRules.enhancements.map(enhancementCard)}
           />
+          </>
         )}
       </div>
     </div>
   );
 }
 
-function RuleCards({ title, items }: { title: string; items: { name: string; description: string }[] }) {
+type RuleItem = { name: string; description: string; meta?: string; unavailable?: boolean };
+
+function RuleWarnings({ warnings }: { warnings?: string[] }) {
+  if (!warnings || warnings.length === 0) return null;
+  return (
+    <details className="codex-status" style={{ marginBottom: '1rem' }}>
+      <summary>Some rules text could not be loaded from the 40k MCP data</summary>
+      <ul>
+        {warnings.map(warning => <li key={warning}>{warning}</li>)}
+      </ul>
+    </details>
+  );
+}
+
+function RuleCards({ title, items }: { title: string; items: RuleItem[] }) {
   return (
     <section className="codex-rule-section">
       <h3>{title}</h3>
@@ -427,7 +469,13 @@ function RuleCards({ title, items }: { title: string; items: { name: string; des
       ) : items.map((item, index) => (
         <article className="codex-rule" key={`${item.name}-${index}`}>
           <h4>{item.name}</h4>
-          <p>{cleanMarkdown(item.description) || 'Rule text is not available.'}</p>
+          {item.meta && <p style={{ opacity: 0.75, fontSize: '0.85rem', margin: '0 0 0.4rem' }}>{item.meta}</p>}
+          <p>
+            {cleanMarkdown(item.description)
+              || (item.unavailable
+                ? 'Rules text is not available in the 40k MCP data for this edition.'
+                : 'Rule text is not available.')}
+          </p>
         </article>
       ))}
     </section>

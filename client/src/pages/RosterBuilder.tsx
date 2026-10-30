@@ -667,7 +667,7 @@ function RosterBuilder() {
     if (!selectedUnitDetails) return;
     const pointsTier = selectedUnitDetails.points_options.find(p => p.models === selectedSize);
     const baseCost = pointsTier ? pointsTier.cost : selectedUnitDetails.points_options[0].cost;
-    const enhancementCost = selectedEnhancement ? selectedEnhancement.cost : 0;
+    const enhancementCost = selectedEnhancement ? Number(selectedEnhancement.cost) || 0 : 0;
 
     if (editingUnitId) {
       setRoster(roster.map(r => r.instanceId === editingUnitId ? {
@@ -771,10 +771,19 @@ function RosterBuilder() {
 
   // 6. Combine them
   const currentLoadout = Array.from(new Set([...remainingBaseWeapons, ...newSelectedWeapons]));
-  const takenEnhancementIds = roster
+  // How many other units already carry each enhancement. Normal enhancements are
+  // unique; an Upgrade may be taken by up to `max_targets` units.
+  const enhancementUses = roster
     .filter(r => r.instanceId !== editingUnitId)
-    .map(r => r.enhancement?.id)
-    .filter(id => id !== undefined);
+    .reduce<Record<string, number>>((counts, r) => {
+      const id = r.enhancement?.id;
+      if (id) counts[id] = (counts[id] ?? 0) + 1;
+      return counts;
+    }, {});
+  const pickableEnhancements = (selectedUnitDetails?.available_enhancements ?? []).filter(enh =>
+    enh.eligible !== false &&
+    (enhancementUses[enh.id] ?? 0) < (enh.upgrade ? (enh.max_targets ?? 3) : 1)
+  );
   const isOverLimit = violations.some(v => v.code === "POINTS_EXCEEDED");
 
   const handleFactionClick = async (f: Faction) => {
@@ -1520,10 +1529,7 @@ function RosterBuilder() {
                 </select>
               </div>
 
-              {selectedUnitDetails.available_enhancements &&
-               selectedUnitDetails.available_enhancements.length > 0 &&
-               selectedUnitDetails.keywords.some(k => k.toUpperCase() === 'CHARACTER') &&
-               !selectedUnitDetails.keywords.some(k => k.toUpperCase() === 'EPIC HERO') && (
+              {(pickableEnhancements.length > 0 || selectedEnhancement) && (
                 <>
                   <div className="dc-size-picker">
                     <label style={{ color: 'var(--border-gold)' }}>ENHANCEMENT</label>
@@ -1531,16 +1537,19 @@ function RosterBuilder() {
                       value={selectedEnhancement ? selectedEnhancement.id : ""}
                       onChange={(e) => {
                         const enh = selectedUnitDetails.available_enhancements.find(x => x.id === e.target.value);
-                        setSelectedEnhancement(enh || null);
+                        setSelectedEnhancement(enh || (selectedEnhancement?.id === e.target.value ? selectedEnhancement : null));
                       }}
                       style={{ borderColor: selectedEnhancement ? 'var(--border-gold)' : 'var(--border-metal)' }}
                     >
                       <option value="">None (0 pts)</option>
-                      {selectedUnitDetails.available_enhancements
-                        .filter(enh => !takenEnhancementIds.includes(enh.id))
-                        .map(enh => (
-                          <option key={enh.id} value={enh.id}>{enh.name} (+{enh.cost} pts)</option>
-                        ))}
+                      {pickableEnhancements.map(enh => (
+                        <option key={enh.id} value={enh.id}>
+                          {enh.name} (+{enh.cost} pts){enh.upgrade ? ` · up to ${enh.max_targets} units` : ''}
+                        </option>
+                      ))}
+                      {selectedEnhancement && !pickableEnhancements.some(enh => enh.id === selectedEnhancement.id) && (
+                        <option value={selectedEnhancement.id}>{selectedEnhancement.name} (+{selectedEnhancement.cost} pts)</option>
+                      )}
                     </select>
                   </div>
                   {selectedEnhancement && (

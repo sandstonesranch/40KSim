@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 from wh40kdc import Dataset
+from .enhancements import detachment_enhancements, is_upgrade, max_copies, restrictions_met
 
 
 class Severity(str, Enum):
@@ -76,7 +77,7 @@ def compute_points(roster: Roster, ds: Dataset) -> int:
         if unit is None:
             continue
         tier = _tier_for(unit, entry.size, copies[entry.datasheet_id])
-        if tier is None:   # invalid size: price at the nearest tier so the readout isn't 0
+        if tier is None and unit.points:   # invalid size: price at the nearest tier so the readout isn't 0
             tier = min(unit.points, key=lambda t: abs(t["models"] - entry.size))
         if tier:
             total += tier["cost"]
@@ -179,22 +180,35 @@ def validate(roster: Roster, ds: Dataset) -> list[Violation]:
                     ),
                 ))
 
-    # Rule 7: Enhancements
-    enhancements_count = 0
+    # Rule 7: Enhancements. Normal enhancements go on Characters; Upgrades go on
+    # non-Characters and all copies of one Upgrade share a single enhancement slot.
+    roster_detachment = next((d for d in ds.detachments if d.get("id") == roster.detachment_id), None)
+    known_enhancements = {e["name"]: e for e in detachment_enhancements(ds, roster_detachment)}
+    enhancement_slots: set[str] = set()
 
     for entry in roster.entries:
         if entry.enhancement:
-            enhancements_count += 1
+            enhancement = known_enhancements.get(entry.enhancement)
+            upgrade = enhancement is not None and is_upgrade(enhancement)
+            enhancement_slots.add(entry.enhancement if upgrade else entry.instance_id)
             unit = ds.units.find(entry.datasheet_id)
             if unit:
                 keywords = [k.upper() for k in unit.keywords]
-                if "CHARACTER" not in keywords:
+                if upgrade and "CHARACTER" in keywords:
+                    violations.append(Violation(
+                        code="UPGRADE_ON_CHARACTER",
+                        severity=Severity.ERROR,
+                        message=f"{entry.enhancement} is an Upgrade and can only be taken by non-CHARACTER units.",
+                        entry_id=entry.instance_id,
+                    ))
+                elif not upgrade and "CHARACTER" not in keywords:
                     violations.append(Violation(
                         code="ENHANCEMENT_ON_NON_CHARACTER",
                         severity=Severity.ERROR,
                         message=f"{unit.name} cannot take an enhancement because it lacks the CHARACTER keyword.",
                         entry_id=entry.instance_id,
                     ))
+    enhancements_count = len(enhancement_slots)
 
     if enhancements_count > enhancement_limit:
         violations.append(Violation(
@@ -218,19 +232,31 @@ def validate(roster: Roster, ds: Dataset) -> list[Violation]:
                     entry_id=entry.instance_id,
                 ))
 
-    # Rule 9: Duplicate Enhancements
-    seen_enhancements = set()
+    # Rule 9: Duplicate Enhancements (an Upgrade may be repeated up to max_targets times)
+    enhancement_copies: dict[str, int] = {}
     for entry in roster.entries:
         if entry.enhancement:
-            if entry.enhancement in seen_enhancements:
+            enhancement = known_enhancements.get(entry.enhancement)
+            copies = enhancement_copies.get(entry.enhancement, 0) + 1
+            enhancement_copies[entry.enhancement] = copies
+            if enhancement is not None and is_upgrade(enhancement):
+                if copies > max_copies(enhancement):
+                    violations.append(Violation(
+                        code="UPGRADE_COPIES_EXCEEDED",
+                        severity=Severity.ERROR,
+                        message=(
+                            f"'{entry.enhancement}' can be taken by at most "
+                            f"{max_copies(enhancement)} units."
+                        ),
+                        entry_id=entry.instance_id,
+                    ))
+            elif copies > 1:
                 violations.append(Violation(
                     code="DUPLICATE_ENHANCEMENT",
                     severity=Severity.ERROR,
                     message=f"Cannot take the enhancement '{entry.enhancement}' multiple times.",
                     entry_id=entry.instance_id,
                 ))
-            else:
-                seen_enhancements.add(entry.enhancement)
 
     # Rule 10: unknown datasheets (stale save / typo) must not silently cost 0
     for entry in roster.entries:
@@ -323,9 +349,7 @@ def validate(roster: Roster, ds: Dataset) -> list[Violation]:
                 violations.append(Violation("UNKNOWN_ENHANCEMENT", Severity.ERROR,
                     f"'{entry.enhancement}' is not an enhancement of {det['name']}.", entry.instance_id))
             elif unit is not None:
-                have = {k.upper() for k in unit.keywords} | {k.upper() for k in unit.faction_keywords} | {unit.name.upper()}
-                need = {k.upper() for k in enh.get("keyword_restrictions", [])}
-                if need and not (need & have):
+                if not restrictions_met(unit, enh):
                     violations.append(Violation("ENHANCEMENT_RESTRICTED", Severity.ERROR,
                         f"{unit.name} is not eligible for {enh['name']}.", entry.instance_id))
 
